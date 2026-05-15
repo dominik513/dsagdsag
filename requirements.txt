@@ -1,5 +1,4 @@
-discord.py==2.4.0
+py-cord==2.6.1
 flask
 gunicorn
-requests
 python-dotenv
