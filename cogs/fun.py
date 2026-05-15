@@ -79,13 +79,20 @@ class Fun(commands.Cog):
 
     @discord.slash_command(name="coinflip", description="Подбросить монетку")
     async def coinflip(self, ctx: discord.ApplicationContext):
+        try:
+            await ctx.defer()
+        except Exception:
+            # если interaction уже истёк — просто попробуем ответить как получится
+            pass
         res = random.choice(["Орёл", "Решка"])
-        await ctx.defer()
         await self._reply(ctx, f"🪙 {res}")
 
     @discord.slash_command(name="roll", description="Случайное число")
     async def roll(self, ctx: discord.ApplicationContext, max_value: int = 100):
-        await ctx.defer()
+        try:
+            await ctx.defer()
+        except Exception:
+            pass
         if max_value < 2 or max_value > 1000000:
             return await self._reply(ctx, "Укажите max_value от 2 до 1 000 000.", ephemeral=True)
         num = random.randint(1, max_value)
