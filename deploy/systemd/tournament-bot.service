@@ -1,0 +1,39 @@
+ [Unit]
+ Description=Dota 2 Tournament Discord Bot (py-cord)
+ After=network-online.target
+ Wants=network-online.target
+ 
+ [Service]
+ Type=simple
+ 
+ # Путь до проекта (папка, где лежит main.py)
+ WorkingDirectory=/opt/tournament-bot/app
+ 
+ # Запускаем через venv
+ ExecStart=/opt/tournament-bot/venv/bin/python main.py
+ Restart=always
+ RestartSec=5
+ 
+ # Переменные окружения
+ EnvironmentFile=/opt/tournament-bot/.env
+ 
+ # Безопасность (умеренно жёстко; можно ослабить при необходимости)
+ User=tournamentbot
+ Group=tournamentbot
+ NoNewPrivileges=true
+ PrivateTmp=true
+ ProtectHome=true
+ ProtectSystem=strict
+ ReadWritePaths=/opt/tournament-bot
+ LockPersonality=true
+ MemoryDenyWriteExecute=true
+ RestrictSUIDSGID=true
+ RestrictRealtime=true
+ RestrictNamespaces=true
+ 
+ # Логи в journalctl
+ StandardOutput=journal
+ StandardError=journal
+ 
+ [Install]
+ WantedBy=multi-user.target
