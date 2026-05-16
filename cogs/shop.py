@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from database import models
-from config import REQUESTS_CHANNEL_ID
+from config import REQUESTS_CHANNEL_ID, GUILD_ID
 
 class Shop(commands.Cog):
     def __init__(self, bot):
@@ -23,7 +23,7 @@ class Shop(commands.Cog):
             except Exception:
                 return
 
-    @discord.slash_command(name="shop", description="Открыть магазин наград")
+    @discord.slash_command(name="shop", description="Открыть магазин наград", guild_ids=[GUILD_ID])
     async def shop(self, ctx: discord.ApplicationContext):
         # ВАЖНО: сначала acknowledge, потом БД, иначе Discord может дать 10062 Unknown interaction
         try:
@@ -50,7 +50,7 @@ class Shop(commands.Cog):
         embed.set_footer(text="/buy <id> для покупки")
         await self._reply(ctx, embed=embed, ephemeral=True)
 
-    @discord.slash_command(name="buy", description="Купить товар")
+    @discord.slash_command(name="buy", description="Купить товар", guild_ids=[GUILD_ID])
     async def buy(self, ctx: discord.ApplicationContext, item_id: int):
         try:
             await ctx.defer(ephemeral=True)
@@ -98,7 +98,7 @@ class Shop(commands.Cog):
                 await requests_channel.send(embed=embed)
             await self._reply(ctx, f"<:yes:1503121926128664766> Заявка на **{item['name']}** создана!", ephemeral=True)
 
-    @discord.slash_command(name="pending_requests", description="Необработанные заявки")
+    @discord.slash_command(name="pending_requests", description="Необработанные заявки", guild_ids=[GUILD_ID])
     @commands.has_permissions(administrator=True)
     async def pending_requests(self, ctx: discord.ApplicationContext):
         try:
@@ -118,7 +118,7 @@ class Shop(commands.Cog):
             )
         await self._reply(ctx, embed=embed, ephemeral=True)
 
-    @discord.slash_command(name="approve_request", description="Одобрить заявку")
+    @discord.slash_command(name="approve_request", description="Одобрить заявку", guild_ids=[GUILD_ID])
     @commands.has_permissions(administrator=True)
     async def approve_request(self, ctx: discord.ApplicationContext, request_id: int):
         try:
@@ -128,7 +128,7 @@ class Shop(commands.Cog):
         models.resolve_request(request_id, "approved", f"Одобрено {ctx.author.name}")
         await self._reply(ctx, f"<:yes:1503121926128664766> Заявка #{request_id} одобрена!", ephemeral=True)
 
-    @discord.slash_command(name="reject_request", description="Отклонить заявку")
+    @discord.slash_command(name="reject_request", description="Отклонить заявку", guild_ids=[GUILD_ID])
     @commands.has_permissions(administrator=True)
     async def reject_request(self, ctx: discord.ApplicationContext, request_id: int, reason: str = None):
         try:

@@ -4,7 +4,15 @@ import os
 # Если python-dotenv не установлен — просто игнорируем.
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    # 1) Явный путь (если задан ENV_FILE)
+    env_file = os.getenv("ENV_FILE", "").strip()
+    if env_file:
+        load_dotenv(env_file, override=False)
+    # 2) Дефолтный путь для VPS-деплоя
+    elif os.path.exists("/opt/tournament-bot/.env"):
+        load_dotenv("/opt/tournament-bot/.env", override=False)
+    # 3) Фолбэк: .env рядом с запуском (локально/Render)
+    load_dotenv(override=False)
 except Exception:
     pass
 

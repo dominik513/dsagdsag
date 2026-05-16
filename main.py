@@ -34,8 +34,8 @@ EXTENSIONS = (
 
 class TournamentBot(commands.Bot):
     async def setup_hook(self):
-        # Важно: в discord.py 2.x load_extension стал coroutine.
-        # В py-cord может быть sync — поэтому поддерживаем оба варианта.
+        # Загружаем cogs и синкаем slash-команды под PY-CORD.
+        # (bot.tree / app_commands тут НЕ используем)
         for ext in EXTENSIONS:
             try:
                 res = self.load_extension(ext)
@@ -45,16 +45,10 @@ class TournamentBot(commands.Bot):
             except Exception as e:
                 print(f"[ERROR] failed to load extension {ext}: {e}")
 
-        # Синхронизация slash-команд:
-        # - py-cord: bot.sync_commands(...)
-        # - discord.py: bot.tree.sync(...)
         try:
-            if hasattr(self, "sync_commands"):
-                await self.sync_commands(guild_ids=[GUILD_ID])
-                print("[OK] slash commands synced (py-cord)")
-            elif hasattr(self, "tree"):
-                await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-                print("[OK] slash commands synced (discord.py)")
+            await self.sync_commands(guild_ids=[GUILD_ID])
+            print("[OK] slash commands synced (py-cord)")
+            self._synced_once = True
         except Exception as e:
             print(f"[ERROR] slash commands sync failed: {e}")
 
@@ -64,6 +58,15 @@ bot = TournamentBot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f"[READY] Logged in as {bot.user} (guild_id={GUILD_ID})")
+    # Страховка: на некоторых окружениях setup_hook может не сработать как ожидается.
+    # Если синхронизации ещё не было — делаем её тут.
+    if not getattr(bot, "_synced_once", False):
+        try:
+            await bot.sync_commands(guild_ids=[GUILD_ID])
+            bot._synced_once = True
+            print("[OK] slash commands synced (py-cord) [on_ready]")
+        except Exception as e:
+            print(f"[ERROR] slash commands sync failed [on_ready]: {e}")
 
 if __name__ == "__main__":
     if not BOT_TOKEN:

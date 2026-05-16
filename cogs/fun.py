@@ -42,7 +42,7 @@ class Fun(commands.Cog):
             except Exception:
                 return
 
-    @discord.slash_command(name="daily", description="Ежедневный бонус (1 раз в 24 часа)")
+    @discord.slash_command(name="daily", description="Ежедневный бонус (1 раз в 24 часа)", guild_ids=[GUILD_ID])
     async def daily(self, ctx: discord.ApplicationContext):
         # чтобы Discord не писал "Приложение не отвечает" на медленном диске/БД — сразу defer
         await ctx.defer(ephemeral=True)
@@ -63,7 +63,7 @@ class Fun(commands.Cog):
         except Exception as e:
             await self._reply(ctx, f"⚠️ Ошибка daily: `{e}`", ephemeral=True)
 
-    @discord.slash_command(name="sync", description="Синхронизировать slash-команды (админ)")
+    @discord.slash_command(name="sync", description="Синхронизировать slash-команды (админ)", guild_ids=[GUILD_ID])
     @commands.has_permissions(administrator=True)
     async def sync(self, ctx: discord.ApplicationContext):
         await ctx.defer(ephemeral=True)
@@ -77,7 +77,7 @@ class Fun(commands.Cog):
         except Exception as e:
             await self._reply(ctx, f"⚠️ Sync ошибка: `{e}`", ephemeral=True)
 
-    @discord.slash_command(name="coinflip", description="Подбросить монетку")
+    @discord.slash_command(name="coinflip", description="Подбросить монетку", guild_ids=[GUILD_ID])
     async def coinflip(self, ctx: discord.ApplicationContext):
         try:
             await ctx.defer()
@@ -87,7 +87,7 @@ class Fun(commands.Cog):
         res = random.choice(["Орёл", "Решка"])
         await self._reply(ctx, f"🪙 {res}")
 
-    @discord.slash_command(name="roll", description="Случайное число")
+    @discord.slash_command(name="roll", description="Случайное число", guild_ids=[GUILD_ID])
     async def roll(self, ctx: discord.ApplicationContext, max_value: int = 100):
         try:
             await ctx.defer()
@@ -98,7 +98,7 @@ class Fun(commands.Cog):
         num = random.randint(1, max_value)
         await self._reply(ctx, f"🎲 Выпало: **{num}** (1–{max_value})")
 
-    @discord.slash_command(name="choose", description="Выбрать случайный вариант (разделяй варианты через | )")
+    @discord.slash_command(name="choose", description="Выбрать случайный вариант (разделяй варианты через | )", guild_ids=[GUILD_ID])
     async def choose(self, ctx: discord.ApplicationContext, options: str):
         await ctx.defer()
         parts = [p.strip() for p in options.split("|") if p.strip()]
@@ -107,7 +107,7 @@ class Fun(commands.Cog):
         pick = random.choice(parts)
         await self._reply(ctx, f"✅ Выбираю: **{pick}**")
 
-    @discord.slash_command(name="8ball", description="Шар предсказаний")
+    @discord.slash_command(name="8ball", description="Шар предсказаний", guild_ids=[GUILD_ID])
     async def eightball(self, ctx: discord.ApplicationContext, question: str):
         await ctx.defer()
         answers = [

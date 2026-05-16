@@ -10,7 +10,7 @@ from utils.helpers import (
     create_live_match_embed, create_result_embed, create_history_embed,
     PositionButtons, SoloButtons
 )
-from config import REGISTRATION_CHANNEL_ID, ADMIN_CHANNEL_ID, DEFAULT_GATHER_TIMEOUT, WINNER_POINTS, LOSER_POINTS
+from config import REGISTRATION_CHANNEL_ID, ADMIN_CHANNEL_ID, DEFAULT_GATHER_TIMEOUT, WINNER_POINTS, LOSER_POINTS, GUILD_ID
 
 HEROES_LIST = [
     "Abaddon", "Alchemist", "Ancient Apparition", "Anti-Mage", "Arc Warden", "Axe",
@@ -476,7 +476,7 @@ class Tournament(commands.Cog):
             embed = create_result_embed(md["display_id"], "☀️ Свет" if winner == "radiant" else "🌑 Тьма", md["score"], md["clock_time"], md["mode"], md["radiant"], md["dire"], heroes, items, networth)
             await channel.send(embed=embed)
 
-    @discord.slash_command(name="report", description="Пожаловаться на игрока")
+    @discord.slash_command(name="report", description="Пожаловаться на игрока", guild_ids=[GUILD_ID])
     async def report(self, ctx, player: discord.Member, reason: str):
         if player.id == ctx.author.id:
             return await ctx.respond("<:no:1503121885674868938> Нельзя жаловаться на себя!", ephemeral=True)
@@ -489,7 +489,7 @@ class Tournament(commands.Cog):
             await admin_channel.send(embed=embed)
         await ctx.respond(f"<:yes:1503121926128664766> Жалоба на {player.mention} отправлена.", ephemeral=True)
 
-    @discord.slash_command(name="auto_stop", description="Остановить")
+    @discord.slash_command(name="auto_stop", description="Остановить", guild_ids=[GUILD_ID])
     @commands.has_permissions(administrator=True)
     async def auto_stop(self, ctx):
         self.auto_mode = False
@@ -497,7 +497,7 @@ class Tournament(commands.Cog):
             self.auto_task.cancel()
         await ctx.respond("<:yes:1503121926128664766> Остановлены.", ephemeral=True)
 
-    @discord.slash_command(name="auto_start", description="Запустить")
+    @discord.slash_command(name="auto_start", description="Запустить", guild_ids=[GUILD_ID])
     @commands.has_permissions(administrator=True)
     async def auto_start(self, ctx):
         if self.auto_mode:
@@ -506,7 +506,7 @@ class Tournament(commands.Cog):
         self.auto_task = asyncio.create_task(self._auto_loop())
         await ctx.respond("<:yes:1503121926128664766> Запущены!", ephemeral=True)
 
-    @discord.slash_command(name="gsi_status", description="Статус")
+    @discord.slash_command(name="gsi_status", description="Статус", guild_ids=[GUILD_ID])
     async def gsi_status(self, ctx):
         from gsi_data import gsi_data
         cur = gsi_data.get_current()
@@ -517,7 +517,7 @@ class Tournament(commands.Cog):
         embed.add_field(name="1x1", value=f"#{self.match_counter.get('1x1', 0)}", inline=True)
         await ctx.respond(embed=embed, ephemeral=True)
 
-    @discord.slash_command(name="match_history", description="История")
+    @discord.slash_command(name="match_history", description="История", guild_ids=[GUILD_ID])
     async def match_history(self, ctx):
         conn = models.get_connection()
         rows = conn.execute("SELECT id, winner, team_radiant, team_dire, finished_at FROM tournaments WHERE status='finished' ORDER BY finished_at DESC LIMIT 5").fetchall()
@@ -525,7 +525,7 @@ class Tournament(commands.Cog):
         matches = [{"id": r["id"], "winner": r["winner"], "team_radiant": json.loads(r["team_radiant"]), "team_dire": json.loads(r["team_dire"]), "finished_at": r["finished_at"]} for r in rows]
         await ctx.respond(embed=create_history_embed(matches))
 
-    @discord.slash_command(name="reset_tournaments", description="Сброс")
+    @discord.slash_command(name="reset_tournaments", description="Сброс", guild_ids=[GUILD_ID])
     @commands.has_permissions(administrator=True)
     async def reset_tournaments(self, ctx):
         for g in self.active_gather.values():

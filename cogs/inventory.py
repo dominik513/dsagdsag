@@ -4,7 +4,7 @@ from database import models
 from config import (
     EMOJI_PROFILE_POINTS, EMOJI_PROFILE_WINS, EMOJI_PROFILE_LOSSES,
     EMOJI_PROFILE_WINRATE, EMOJI_PROFILE_MATCHES,
-    EMOJI_KILLS, EMOJI_DEATHS, EMOJI_ASSISTS
+    EMOJI_KILLS, EMOJI_DEATHS, EMOJI_ASSISTS, GUILD_ID
 )
 
 RANK_COLORS_5x5 = {
@@ -30,7 +30,7 @@ class Inventory(commands.Cog):
                 return color
         return 0x2c2f33
 
-    @discord.slash_command(name="profile", description="Ваш профиль")
+    @discord.slash_command(name="profile", description="Ваш профиль", guild_ids=[GUILD_ID])
     async def profile(self, ctx: discord.ApplicationContext, member: discord.Member = None):
         target = member or ctx.author
         player = models.get_player(target.id)
@@ -79,7 +79,7 @@ class Inventory(commands.Cog):
         embed.set_footer(text=f"ID: {target.id}")
         await ctx.respond(embed=embed)
 
-    @discord.slash_command(name="leaderboard", description="Топ по ZXC")
+    @discord.slash_command(name="leaderboard", description="Топ по ZXC", guild_ids=[GUILD_ID])
     async def leaderboard(self, ctx: discord.ApplicationContext, mode: str = "5x5"):
         if mode not in ("5x5", "1x1"):
             return await ctx.respond("Укажите 5x5 или 1x1", ephemeral=True)

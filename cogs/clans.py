@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from database import models
+from config import GUILD_ID
 
 EMBED_COLOR = 0x2c2f33
 CLAN_CREATE_COST = 500
@@ -167,7 +168,7 @@ class Clans(commands.Cog):
         conn.close()
         return f"[{row['tag']}]" if row else ""
 
-    @discord.slash_command(name="clan_create", description="Создать клан (500 очков)")
+    @discord.slash_command(name="clan_create", description="Создать клан (500 очков)", guild_ids=[GUILD_ID])
     async def clan_create(self, ctx, name: str, tag: str):
         if len(tag) > 5:
             return await ctx.respond("<:no:1503121885674868938> Тег не длиннее 5 символов!", ephemeral=True)
@@ -205,7 +206,7 @@ class Clans(commands.Cog):
         conn.close()
         await ctx.respond(f"<:yes:1503121926128664766> Клан **[{tag}] {name}** создан! Канал: {channel.mention}")
 
-    @discord.slash_command(name="clan_invite", description="Пригласить в клан")
+    @discord.slash_command(name="clan_invite", description="Пригласить в клан", guild_ids=[GUILD_ID])
     async def clan_invite(self, ctx, member: discord.Member):
         conn = models.get_connection()
         row = conn.execute("SELECT c.id, c.name, c.tag, c.owner_id FROM clans c JOIN clan_members cm ON c.id = cm.clan_id WHERE cm.discord_id = ?", (ctx.author.id,)).fetchone()
@@ -224,7 +225,7 @@ class Clans(commands.Cog):
         await ctx.send(f"{member.mention}, приглашение в **[{row['tag']}] {row['name']}**!", view=view)
         await ctx.respond("<:yes:1503121926128664766> Приглашение отправлено.", ephemeral=True)
 
-    @discord.slash_command(name="clan_kick", description="Выгнать из клана")
+    @discord.slash_command(name="clan_kick", description="Выгнать из клана", guild_ids=[GUILD_ID])
     async def clan_kick(self, ctx, member: discord.Member):
         if member.id == ctx.author.id:
             return await ctx.respond("<:no:1503121885674868938> Нельзя выгнать себя!", ephemeral=True)
@@ -249,7 +250,7 @@ class Clans(commands.Cog):
                 await channel.set_permissions(member, overwrite=None)
         await ctx.respond(f"👢 {member.mention} выгнан из **{row['name']}**.")
 
-    @discord.slash_command(name="clan_leave", description="Выйти из клана")
+    @discord.slash_command(name="clan_leave", description="Выйти из клана", guild_ids=[GUILD_ID])
     async def clan_leave(self, ctx):
         conn = models.get_connection()
         row = conn.execute("SELECT c.id, c.name, c.owner_id, c.chat_id FROM clans c JOIN clan_members cm ON c.id = cm.clan_id WHERE cm.discord_id = ?", (ctx.author.id,)).fetchone()
@@ -268,7 +269,7 @@ class Clans(commands.Cog):
                 await channel.set_permissions(ctx.author, overwrite=None)
         await ctx.respond(f"<:yes:1503121926128664766> Вы вышли из **{row['name']}**.")
 
-    @discord.slash_command(name="clan_info", description="Информация о клане")
+    @discord.slash_command(name="clan_info", description="Информация о клане", guild_ids=[GUILD_ID])
     async def clan_info(self, ctx):
         conn = models.get_connection()
         row = conn.execute("SELECT c.*, (SELECT COUNT(*) FROM clan_members WHERE clan_id = c.id) as member_count FROM clans c JOIN clan_members cm ON c.id = cm.clan_id WHERE cm.discord_id = ?", (ctx.author.id,)).fetchone()
@@ -299,7 +300,7 @@ class Clans(commands.Cog):
         view = ClanManageView(row["id"], row["owner_id"]) if ctx.author.id == row["owner_id"] else None
         await ctx.respond(embed=embed, view=view)
 
-    @discord.slash_command(name="clans_top", description="Топ кланов")
+    @discord.slash_command(name="clans_top", description="Топ кланов", guild_ids=[GUILD_ID])
     async def clans_top(self, ctx):
         conn = models.get_connection()
         rows = conn.execute("SELECT name, tag, wins, losses, avatar FROM clans ORDER BY wins DESC LIMIT 10").fetchall()
