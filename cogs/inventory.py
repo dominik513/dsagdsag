@@ -66,7 +66,8 @@ class Inventory(commands.Cog):
         embed.add_field(name=f"{EMOJI_PROFILE_WINRATE} Винрейт", value=f"**{winrate}%**", inline=True)
         embed.add_field(name=f"{EMOJI_PROFILE_WINS} Победы", value=f"**{stats['wins']}**", inline=True)
         embed.add_field(name=f"{EMOJI_PROFILE_LOSSES} Поражения", value=f"**{stats['losses']}**", inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        streak, best_streak = models.get_win_streak_info(target.id)
+        embed.add_field(name="🔥 Серия", value=f"**{streak}** (рек. {best_streak})", inline=True)
         if calib_5 or calib_1:
             embed.add_field(name=f"{EMOJI_KILLS} Убийств", value=f"**{kills}**", inline=True)
             embed.add_field(name=f"{EMOJI_DEATHS} Смертей", value=f"**{deaths}**", inline=True)

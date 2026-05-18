@@ -415,8 +415,257 @@ def set_tournament_winner(tournament_id: int, winner: str):
     conn.commit()
     conn.close()
 
-def cancel_tournament(tournament_id: int):
+def cancel_tournament(tournament_id: int, reason: str | None = None):
     conn = get_connection()
-    conn.execute("UPDATE tournaments SET status = 'cancelled' WHERE id = ?", (tournament_id,))
+    if reason:
+        conn.execute(
+            "UPDATE tournaments SET status = 'cancelled', cancel_reason = ? WHERE id = ?",
+            (reason, tournament_id),
+        )
+    else:
+        conn.execute("UPDATE tournaments SET status = 'cancelled' WHERE id = ?", (tournament_id,))
     conn.commit()
     conn.close()
+
+
+def annul_tournament(tournament_id: int, reason: str, cheat_flags: str | None = None):
+    """Аннулировать матч без победителя (очки не начислялись)."""
+    conn = get_connection()
+    conn.execute(
+        "UPDATE tournaments SET status = 'cancelled', winner = NULL, cancel_reason = ?, cheat_flags = ?, finished_at = ? WHERE id = ?",
+        (reason, cheat_flags, datetime.utcnow(), tournament_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_dota_name(discord_id: int, dota_name: str):
+    conn = get_connection()
+    conn.execute("UPDATE players SET dota_name = ? WHERE discord_id = ?", (dota_name.strip(), discord_id))
+    conn.commit()
+    conn.close()
+
+
+def get_dota_name(discord_id: int) -> str | None:
+    conn = get_connection()
+    row = conn.execute("SELECT dota_name FROM players WHERE discord_id = ?", (discord_id,)).fetchone()
+    conn.close()
+    if row and row["dota_name"]:
+        return row["dota_name"]
+    return None
+
+
+def build_name_map(discord_ids: list[int], username_fallback: dict[int, str]) -> dict[int, str]:
+    """discord_id -> имя для сопоставления с GSI."""
+    result = {}
+    for uid in discord_ids:
+        dn = get_dota_name(uid)
+        result[uid] = dn or username_fallback.get(uid) or str(uid)
+    return result
+
+
+def save_match_player_logs(tournament_id: int, rows: list[dict]):
+    conn = get_connection()
+    for r in rows:
+        conn.execute(
+            """INSERT INTO match_player_logs
+               (tournament_id, discord_id, dota_name, team, kills, deaths, assists, last_hits, denies, networth, hero, flags)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                tournament_id,
+                r.get("discord_id"),
+                r.get("dota_name"),
+                r.get("team"),
+                r.get("kills", 0),
+                r.get("deaths", 0),
+                r.get("assists", 0),
+                r.get("last_hits", 0),
+                r.get("denies", 0),
+                r.get("networth", 0),
+                r.get("hero"),
+                r.get("flags"),
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+
+def update_win_streak(discord_id: int, won: bool) -> int:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT win_streak, best_win_streak FROM players WHERE discord_id = ?", (discord_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return 0
+    streak = row["win_streak"] or 0
+    best = row["best_win_streak"] or 0
+    if won:
+        streak += 1
+        best = max(best, streak)
+    else:
+        streak = 0
+    conn.execute(
+        "UPDATE players SET win_streak = ?, best_win_streak = ? WHERE discord_id = ?",
+        (streak, best, discord_id),
+    )
+    conn.commit()
+    conn.close()
+    return streak
+
+
+def get_win_streak_info(discord_id: int) -> tuple[int, int]:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT win_streak, best_win_streak FROM players WHERE discord_id = ?", (discord_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return 0, 0
+    return row["win_streak"] or 0, row["best_win_streak"] or 0
+
+
+def get_last_match_log_for_player(discord_id: int) -> dict | None:
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT mpl.*, t.id as tid FROM match_player_logs mpl
+           JOIN tournaments t ON t.id = mpl.tournament_id
+           WHERE mpl.discord_id = ? ORDER BY mpl.id DESC LIMIT 1""",
+        (discord_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def refund_bets_for_tournament(tournament_id: int, bets: dict) -> None:
+    """Вернуть ставки при аннулировании (bets: {uid: {team, amount}})."""
+    for uid, bet in bets.items():
+        add_points(uid, bet["amount"], count_match=False)
+
+
+def void_tournament(tournament_id: int, reason: str):
+    """Аннулировать матч (status=cancelled + void_reason, совместимо со схемой БД)."""
+    conn = get_connection()
+    conn.execute(
+        "UPDATE tournaments SET status = 'cancelled', winner = NULL, void_reason = ?, cancel_reason = ?, finished_at = ? WHERE id = ?",
+        (reason, reason, datetime.utcnow(), tournament_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_player_dota_name(discord_id: int, dota_name: str):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE players SET dota_name = ? WHERE discord_id = ?",
+        (dota_name.strip(), discord_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_player_dota_name(discord_id: int) -> str | None:
+    conn = get_connection()
+    row = conn.execute("SELECT dota_name FROM players WHERE discord_id = ?", (discord_id,)).fetchone()
+    conn.close()
+    if row and row["dota_name"]:
+        return row["dota_name"]
+    return None
+
+
+def learn_dota_name(discord_id: int, dota_name: str):
+    if not dota_name or not dota_name.strip():
+        return
+    conn = get_connection()
+    row = conn.execute("SELECT dota_name FROM players WHERE discord_id = ?", (discord_id,)).fetchone()
+    if row and not row["dota_name"]:
+        conn.execute("UPDATE players SET dota_name = ? WHERE discord_id = ?", (dota_name.strip(), discord_id))
+        conn.commit()
+    conn.close()
+
+
+def get_registered_name_set(team: list[int]) -> set[str]:
+    names = set()
+    conn = get_connection()
+    for uid in team:
+        row = conn.execute("SELECT dota_name, username FROM players WHERE discord_id = ?", (uid,)).fetchone()
+        if row:
+            if row["dota_name"]:
+                names.add(row["dota_name"].lower())
+            if row["username"]:
+                names.add(row["username"].lower())
+    conn.close()
+    return names
+
+
+def resolve_stats_to_discord(player_stats: dict, team: list[int]) -> dict[int, dict]:
+    """Сопоставить GSI-ник → discord_id."""
+    result: dict[int, dict] = {}
+    conn = get_connection()
+    for uid in team:
+        row = conn.execute(
+            "SELECT dota_name, username FROM players WHERE discord_id = ?",
+            (uid,),
+        ).fetchone()
+        if not row:
+            continue
+        keys = {str(uid)}
+        if row["dota_name"]:
+            keys.add(row["dota_name"].lower())
+        if row["username"]:
+            keys.add(row["username"].lower())
+        for gsi_name, stats in player_stats.items():
+            if gsi_name.lower() in keys or gsi_name == str(uid):
+                result[uid] = stats
+                break
+    conn.close()
+    return result
+
+
+def save_tournament_player_stats(
+    tournament_id: int,
+    discord_id: int,
+    stats: dict,
+    *,
+    hero: str | None = None,
+    dota_name: str | None = None,
+):
+    conn = get_connection()
+    conn.execute(
+        """UPDATE tournament_players SET
+            kills = ?, deaths = ?, assists = ?, last_hits = ?, denies = ?,
+            net_worth = ?, hero = ?, dota_name = ?
+        WHERE tournament_id = ? AND discord_id = ?""",
+        (
+            stats.get("kills", 0),
+            stats.get("deaths", 0),
+            stats.get("assists", 0),
+            stats.get("last_hits", 0),
+            stats.get("denies", 0),
+            stats.get("net_worth", 0),
+            hero,
+            dota_name,
+            tournament_id,
+            discord_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_win_streak(discord_id: int) -> int:
+    conn = get_connection()
+    row = conn.execute("SELECT win_streak FROM players WHERE discord_id = ?", (discord_id,)).fetchone()
+    conn.close()
+    return row["win_streak"] if row and row["win_streak"] else 0
+
+
+def set_win_streak(discord_id: int, streak: int):
+    conn = get_connection()
+    conn.execute("UPDATE players SET win_streak = ? WHERE discord_id = ?", (max(0, streak), discord_id))
+    conn.commit()
+    conn.close()
+
+
+def refund_bet(discord_id: int, amount: int):
+    add_points(discord_id, amount, count_match=False)

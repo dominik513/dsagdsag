@@ -142,5 +142,60 @@ def init_db():
     except:
         pass
 
+    for col, col_type in [
+        ("dota_name", "TEXT"),
+        ("win_streak", "INTEGER DEFAULT 0"),
+        ("best_win_streak", "INTEGER DEFAULT 0"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE players ADD COLUMN {col} {col_type}")
+        except:
+            pass
+
+    for col, col_type in [
+        ("void_reason", "TEXT"),
+        ("cancel_reason", "TEXT"),
+        ("cheat_flags", "TEXT"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE tournaments ADD COLUMN {col} {col_type}")
+        except:
+            pass
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS match_player_logs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tournament_id   INTEGER NOT NULL,
+            discord_id      INTEGER,
+            dota_name       TEXT,
+            team            TEXT,
+            kills           INTEGER DEFAULT 0,
+            deaths          INTEGER DEFAULT 0,
+            assists          INTEGER DEFAULT 0,
+            last_hits       INTEGER DEFAULT 0,
+            denies          INTEGER DEFAULT 0,
+            networth        INTEGER DEFAULT 0,
+            hero            TEXT,
+            flags           TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (tournament_id) REFERENCES tournaments(id)
+        )
+    """)
+
+    for col, col_type in [
+        ("kills", "INTEGER DEFAULT 0"),
+        ("deaths", "INTEGER DEFAULT 0"),
+        ("assists", "INTEGER DEFAULT 0"),
+        ("last_hits", "INTEGER DEFAULT 0"),
+        ("denies", "INTEGER DEFAULT 0"),
+        ("net_worth", "INTEGER DEFAULT 0"),
+        ("hero", "TEXT"),
+        ("dota_name", "TEXT"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE tournament_players ADD COLUMN {col} {col_type}")
+        except:
+            pass
+
     conn.commit()
     conn.close()

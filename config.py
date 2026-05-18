@@ -21,6 +21,21 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "1194213813470363711"))
 REGISTRATION_CHANNEL_ID = int(os.getenv("REGISTRATION_CHANNEL_ID", "1204457612121215028"))
 REQUESTS_CHANNEL_ID = int(os.getenv("REQUESTS_CHANNEL_ID", "1202232778771402772"))
+# Канал подробных логов матчей (K/D/A, добив, LH/DN, аннулирования). 0 = отключено
+_match_log_raw = int(os.getenv("MATCH_LOG_CHANNEL_ID", "0"))
+MATCH_LOG_CHANNEL_ID = _match_log_raw if _match_log_raw else 0
+
+# Антиабуз / аннулирование матчей
+INTEGRITY_MIN_MAPPED_PLAYERS = int(os.getenv("INTEGRITY_MIN_MAPPED_PLAYERS", "1"))
+INTEGRITY_MIN_DEATHS_5X5 = int(os.getenv("INTEGRITY_MIN_DEATHS_5X5", "12"))
+INTEGRITY_MIN_DEATHS_1X1 = int(os.getenv("INTEGRITY_MIN_DEATHS_1X1", "8"))
+INTEGRITY_MAX_KDA_FEED = float(os.getenv("INTEGRITY_MAX_KDA_FEED", "0.15"))
+INTEGRITY_BLOWOUT_SCORE_DIFF = int(os.getenv("INTEGRITY_BLOWOUT_SCORE_DIFF", "25"))
+INTEGRITY_BLOWOUT_MAX_MINUTES = int(os.getenv("INTEGRITY_BLOWOUT_MAX_MINUTES", "8"))
+MVP_BONUS_POINTS = int(os.getenv("MVP_BONUS_POINTS", "15"))
+STREAK_BONUS_PER_WIN = int(os.getenv("STREAK_BONUS_PER_WIN", "5"))
+STREAK_BONUS_MAX = int(os.getenv("STREAK_BONUS_MAX", "25"))
+FEED_PENALTY_POINTS = int(os.getenv("FEED_PENALTY_POINTS", "75"))
 GUILD_ID = int(os.getenv("GUILD_ID", "1194213813428441108"))
 DEFAULT_GATHER_TIMEOUT = int(os.getenv("DEFAULT_GATHER_TIMEOUT", "300"))
 WINNER_POINTS = int(os.getenv("WINNER_POINTS", "125"))

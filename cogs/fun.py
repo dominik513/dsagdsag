@@ -6,7 +6,7 @@ import discord
 from discord.ext import commands
 
 from database import models
-from config import GUILD_ID
+from config import GUILD_ID, STREAK_BONUS_PER_WIN, STREAK_BONUS_MAX
 
 
 def _format_left(seconds_left: int) -> str:
@@ -123,6 +123,41 @@ class Fun(commands.Cog):
             "50/50.",
         ]
         await self._reply(ctx, f"🎱 Вопрос: *{question}*\nОтвет: **{random.choice(answers)}**")
+
+    @discord.slash_command(name="streak", description="Текущая серия побед", guild_ids=[GUILD_ID])
+    async def streak(self, ctx: discord.ApplicationContext, member: discord.Member = None):
+        await ctx.defer(ephemeral=True)
+        target = member or ctx.author
+        models.get_or_create_player(target.id, target.name)
+        current, best = models.get_win_streak_info(target.id)
+        bonus = min(current * STREAK_BONUS_PER_WIN, STREAK_BONUS_MAX)
+        await self._reply(
+            ctx,
+            f"🔥 **{target.display_name}**\n"
+            f"Серия: **{current}** | Рекорд: **{best}**\n"
+            f"Бонус к победе в следующем матче: **+{bonus}** очков",
+            ephemeral=True,
+        )
+
+    @discord.slash_command(name="lastmatch", description="Ваш последний матч (статы)", guild_ids=[GUILD_ID])
+    async def lastmatch(self, ctx: discord.ApplicationContext, member: discord.Member = None):
+        await ctx.defer(ephemeral=True)
+        target = member or ctx.author
+        row = models.get_last_match_log_for_player(target.id)
+        if not row:
+            return await self._reply(ctx, "Нет сохранённых матчей. Сыграйте турнирный матч.", ephemeral=True)
+        embed = discord.Embed(title=f"📊 Последний матч #{row.get('tournament_id', '?')}", color=0x5865F2)
+        embed.add_field(name="K/D/A", value=f"{row.get('kills', 0)}/{row.get('deaths', 0)}/{row.get('assists', 0)}", inline=True)
+        embed.add_field(name="LH / DN", value=f"{row.get('last_hits', 0)} / {row.get('denies', 0)}", inline=True)
+        embed.add_field(name="NW", value=str(row.get("networth", 0)), inline=True)
+        if row.get("hero"):
+            embed.add_field(name="Герой", value=str(row["hero"]), inline=True)
+        if row.get("flags"):
+            embed.add_field(name="Флаг", value=str(row["flags"]), inline=True)
+        try:
+            await ctx.followup.send(embed=embed, ephemeral=True)
+        except Exception:
+            await self._reply(ctx, "Не удалось отправить embed.", ephemeral=True)
 
 
 def setup(bot):

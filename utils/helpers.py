@@ -1,5 +1,8 @@
 import discord
-from config import WINNER_POINTS, LOSER_POINTS, EMOJI_CARRY, EMOJI_MID, EMOJI_OFFLANE, EMOJI_SUP4, EMOJI_SUP5, EMOJI_RADIANT, EMOJI_DIRE, EMOJI_BET, EMOJI_POINTS, EMOJI_CLOCK
+from config import (
+    WINNER_POINTS, LOSER_POINTS, EMOJI_CARRY, EMOJI_MID, EMOJI_OFFLANE, EMOJI_SUP4, EMOJI_SUP5,
+    EMOJI_RADIANT, EMOJI_DIRE, EMOJI_BET, EMOJI_POINTS, EMOJI_CLOCK, EMOJI_KILLS, EMOJI_DEATHS, EMOJI_ASSISTS,
+)
 import sqlite3
 from config import DATABASE_PATH
 
@@ -153,6 +156,84 @@ def create_result_embed(tid: int, winner_name: str, score: tuple, clock: int, mo
             embed.add_field(name="🎒 Предметы", value="\n".join(all_items[:10]), inline=False)
     embed.set_footer(text="Спасибо за игру!")
     return embed
+
+def create_void_embed(tid: int, reason: str, mode: str, score: tuple, clock: int) -> discord.Embed:
+    m, s = clock // 60, clock % 60
+    embed = discord.Embed(
+        title=f"🚫 Матч #{tid} аннулирован",
+        description=(
+            f"**Причина:** {reason}\n"
+            f"Режим: **{mode}** | {EMOJI_RADIANT} **{score[0]}** — **{score[1]}** {EMOJI_DIRE}\n"
+            f"{EMOJI_CLOCK} {m:02d}:{s:02d}\n\n"
+            "Очки и рейтинг **не начислены**. Ставки **возвращены**."
+        ),
+        color=0xe74c3c,
+    )
+    embed.set_footer(text="При ошибке обратитесь к администратору")
+    return embed
+
+
+def create_match_log_embed(
+    tid: int,
+    mode: str,
+    winner: str,
+    score: tuple,
+    clock: int,
+    radiant: list,
+    dire: list,
+    stats_by_uid: dict,
+    heroes: dict | None = None,
+    *,
+    voided: bool = False,
+    void_reason: str | None = None,
+    mvp_uid: int | None = None,
+    integrity_issues: list | None = None,
+) -> discord.Embed:
+    m, s = clock // 60, clock % 60
+    winner_label = "☀️ Свет" if winner == "radiant" else "🌑 Тьма"
+    title = f"📋 Лог матча #{tid}" + (" — АННУЛИРОВАН" if voided else "")
+    embed = discord.Embed(
+        title=title,
+        description=(
+            f"{'🚫 ' + void_reason if voided and void_reason else f'Победитель: **{winner_label}**'}\n"
+            f"{EMOJI_RADIANT} **{score[0]}** — **{score[1]}** {EMOJI_DIRE} | {EMOJI_CLOCK} {m:02d}:{s:02d} | {mode}"
+        ),
+        color=0xe74c3c if voided else 0x5865f2,
+    )
+
+    def _lines(team: list, side: str) -> list[str]:
+        out = []
+        for uid in team:
+            st = stats_by_uid.get(uid, {})
+            k = st.get("kills", 0)
+            d = st.get("deaths", 0)
+            a = st.get("assists", 0)
+            lh = st.get("last_hits", 0)
+            dn = st.get("denies", 0)
+            nw = st.get("net_worth", 0)
+            tag = get_clan_tag(uid)
+            hero = ""
+            if heroes:
+                hero = heroes.get(str(uid)) or heroes.get(uid) or st.get("hero", "")
+            mvp_mark = " ⭐" if mvp_uid == uid else ""
+            hero_part = f" | {hero}" if hero else ""
+            out.append(
+                f"{tag} <@{uid}>{mvp_mark}{hero_part}\n"
+                f"{EMOJI_KILLS}{k} {EMOJI_DEATHS}{d} {EMOJI_ASSISTS}{a} | LH **{lh}** DN **{dn}** | {EMOJI_BET} **{nw}**"
+            )
+        return out
+
+    r_lines = _lines(radiant, "radiant")
+    d_lines = _lines(dire, "dire")
+    embed.add_field(name=f"{EMOJI_RADIANT} Свет", value="\n".join(r_lines) if r_lines else "—", inline=False)
+    embed.add_field(name=f"{EMOJI_DIRE} Тьма", value="\n".join(d_lines) if d_lines else "—", inline=False)
+
+    if integrity_issues:
+        issues_text = "\n".join(f"• `{i.code}`: {i.detail}" for i in integrity_issues[:8])
+        embed.add_field(name="⚠️ Проверка честности", value=issues_text, inline=False)
+
+    return embed
+
 
 def create_history_embed(matches: list) -> discord.Embed:
     embed = discord.Embed(title="📜 История", color=EMBED_COLOR)

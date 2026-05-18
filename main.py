@@ -29,6 +29,7 @@ EXTENSIONS = (
     "cogs.clans",
     "cogs.roles",
     "cogs.fun",
+    "cogs.admin",
 )
 
 

@@ -67,8 +67,12 @@ def receive_gsi():
         gsi_data.update(match_info)
         if match_info["game_state"] == "DOTA_GAMERULES_STATE_POST_GAME":
             match_id = match_info["matchid"]
-            gsi_data.add_finished(match_id, match_info.copy())
-            log.info(f"<:yes:1503121926128664766> Матч {match_id} завершён!")
+            tid = None
+            with gsi_data.lock:
+                if len(gsi_data.tournament_bindings) == 1:
+                    tid = next(iter(gsi_data.tournament_bindings))
+            gsi_data.add_finished(match_id, match_info.copy(), tournament_id=tid)
+            log.info(f"Матч {match_id} завершён (tournament={tid})!")
         return jsonify({"status": "ok"})
     except Exception as e:
         log.error(f"Ошибка: {e}")
