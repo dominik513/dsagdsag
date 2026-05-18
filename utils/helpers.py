@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import discord
 from config import (
     WINNER_POINTS, LOSER_POINTS, EMOJI_CARRY, EMOJI_MID, EMOJI_OFFLANE, EMOJI_SUP4, EMOJI_SUP5,
