@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import random
 from datetime import timedelta
@@ -6,7 +8,8 @@ import discord
 from discord.ext import commands
 
 from database import models
-from config import GUILD_ID, STREAK_BONUS_PER_WIN, STREAK_BONUS_MAX
+from config import GUILD_ID, STREAK_BONUS_PER_WIN, STREAK_BONUS_MAX, CLAN_TIP_MIN
+from database.models import ClanError
 
 
 def _format_left(seconds_left: int) -> str:
@@ -68,12 +71,17 @@ class Fun(commands.Cog):
     async def sync(self, ctx: discord.ApplicationContext):
         await ctx.defer(ephemeral=True)
         try:
-            guild = self.bot.get_guild(GUILD_ID) or ctx.guild
-            gid = guild.id if guild else None
-            if not gid:
-                return await self._reply(ctx, "⚠️ Не удалось определить сервер (guild).", ephemeral=True)
-            await self.bot.sync_commands(guild_ids=[gid])
-            await self._reply(ctx, "<:yes:1503121926128664766> Команды синхронизированы. Подожди 1–2 минуты и проверь /daily.", ephemeral=True)
+            await self.bot.sync_commands(guild_ids=[GUILD_ID])
+            n = 0
+            walk = getattr(self.bot, "walk_application_commands", None)
+            if walk:
+                n = len(list(walk()))
+            await self._reply(
+                ctx,
+                f"<:yes:1503121926128664766> Синхронизировано (~{n} команд). "
+                "Подождите 1–2 минуты и проверьте /daily.",
+                ephemeral=True,
+            )
         except Exception as e:
             await self._reply(ctx, f"⚠️ Sync ошибка: `{e}`", ephemeral=True)
 
@@ -138,6 +146,27 @@ class Fun(commands.Cog):
             f"Бонус к победе в следующем матче: **+{bonus}** очков",
             ephemeral=True,
         )
+
+    @discord.slash_command(name="tip", description="Перевести очки другому игроку", guild_ids=[GUILD_ID])
+    async def tip(self, ctx: discord.ApplicationContext, member: discord.Member, amount: int):
+        await ctx.defer(ephemeral=True)
+        if amount < CLAN_TIP_MIN:
+            return await self._reply(
+                ctx,
+                f"<:no:1503121885674868938> Минимум **{CLAN_TIP_MIN}** очков.",
+                ephemeral=True,
+            )
+        try:
+            models.get_or_create_player(ctx.author.id, ctx.author.name)
+            models.get_or_create_player(member.id, member.name)
+            models.tip_player(ctx.author.id, member.id, amount)
+            await self._reply(
+                ctx,
+                f"<:yes:1503121926128664766> Переведено **{amount}** очков → {member.mention}",
+                ephemeral=True,
+            )
+        except ClanError as e:
+            await self._reply(ctx, f"<:no:1503121885674868938> {e}", ephemeral=True)
 
     @discord.slash_command(name="lastmatch", description="Ваш последний матч (статы)", guild_ids=[GUILD_ID])
     async def lastmatch(self, ctx: discord.ApplicationContext, member: discord.Member = None):

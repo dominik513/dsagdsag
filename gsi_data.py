@@ -66,7 +66,8 @@ class GSIData:
                     self.player_stats[match_id] = {}
                 name = player_data.get("name", "unknown")
                 if name != "unknown":
-                    self.player_stats[match_id][name] = {
+                    account_id = player_data.get("accountid") or player_data.get("account_id")
+                    entry = {
                         "kills": player_data.get("kills", 0),
                         "deaths": player_data.get("deaths", 0),
                         "assists": player_data.get("assists", 0),
@@ -75,6 +76,9 @@ class GSIData:
                         "networth": player_data.get("net_worth", 0),
                         "team": player_data.get("team_name", "unknown"),
                     }
+                    if account_id is not None:
+                        entry["account_id"] = account_id
+                    self.player_stats[match_id][name] = entry
 
     def get_current(self) -> dict:
         with self.lock:

@@ -1,4 +1,18 @@
+from __future__ import annotations
+
 import os
+
+
+def _env_int(name: str, default: int = 0) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"[WARN] {name}={raw!r} — не число, используем {default}")
+        return default
+
 
 # Поддержка .env (удобно для хостингов, где нет нормального UI для ENV).
 # Если python-dotenv не установлен — просто игнорируем.
@@ -17,13 +31,12 @@ except Exception:
     pass
 
 # ВАЖНО: токен не должен храниться в коде/репозитории. Задавай BOT_TOKEN в переменных окружения.
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip().strip('"').strip("'")
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "1194213813470363711"))
 REGISTRATION_CHANNEL_ID = int(os.getenv("REGISTRATION_CHANNEL_ID", "1204457612121215028"))
 REQUESTS_CHANNEL_ID = int(os.getenv("REQUESTS_CHANNEL_ID", "1202232778771402772"))
 # Канал подробных логов матчей (K/D/A, добив, LH/DN, аннулирования). 0 = отключено
-_match_log_raw = int(os.getenv("MATCH_LOG_CHANNEL_ID", "0"))
-MATCH_LOG_CHANNEL_ID = _match_log_raw if _match_log_raw else 0
+MATCH_LOG_CHANNEL_ID = _env_int("MATCH_LOG_CHANNEL_ID", 0)
 
 # Антиабуз / аннулирование матчей
 INTEGRITY_MIN_MAPPED_PLAYERS = int(os.getenv("INTEGRITY_MIN_MAPPED_PLAYERS", "1"))
@@ -36,13 +49,39 @@ MVP_BONUS_POINTS = int(os.getenv("MVP_BONUS_POINTS", "15"))
 STREAK_BONUS_PER_WIN = int(os.getenv("STREAK_BONUS_PER_WIN", "5"))
 STREAK_BONUS_MAX = int(os.getenv("STREAK_BONUS_MAX", "25"))
 FEED_PENALTY_POINTS = int(os.getenv("FEED_PENALTY_POINTS", "75"))
-GUILD_ID = int(os.getenv("GUILD_ID", "1194213813428441108"))
+GUILD_ID = _env_int("GUILD_ID", 1194213813428441108)
 DEFAULT_GATHER_TIMEOUT = int(os.getenv("DEFAULT_GATHER_TIMEOUT", "300"))
 WINNER_POINTS = int(os.getenv("WINNER_POINTS", "125"))
 LOSER_POINTS = int(os.getenv("LOSER_POINTS", "35"))
 GSI_HOST = os.getenv("GSI_HOST", "0.0.0.0")
 GSI_PUBLIC_URL = os.getenv("GSI_PUBLIC_URL", "")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "data/tournament_bot.db")
+# Опционально: для ссылок steamcommunity.com/id/… (ResolveVanityURL)
+STEAM_API_KEY = os.getenv("STEAM_API_KEY", "").strip()
+
+# Кланы: казна и бонусы
+CLAN_MATCH_TREASURY_BONUS = _env_int("CLAN_MATCH_TREASURY_BONUS", 25)
+CLAN_MATCH_MIN_MEMBERS = _env_int("CLAN_MATCH_MIN_MEMBERS", 2)
+CLAN_XP_PER_100_DEPOSIT = _env_int("CLAN_XP_PER_100_DEPOSIT", 15)
+CLAN_LEVEL_XP_BASE = _env_int("CLAN_LEVEL_XP_BASE", 500)
+CLAN_TIP_MIN = _env_int("CLAN_TIP_MIN", 5)
+
+# Развлечения / удержание
+WEEKLY_REWARD = _env_int("WEEKLY_REWARD", 75)
+LUCKY_COOLDOWN_HOURS = _env_int("LUCKY_COOLDOWN_HOURS", 12)
+LUCKY_MIN = _env_int("LUCKY_MIN", 5)
+LUCKY_MAX = _env_int("LUCKY_MAX", 45)
+LUCKY_JACKPOT = _env_int("LUCKY_JACKPOT", 150)
+LUCKY_JACKPOT_CHANCE = _env_int("LUCKY_JACKPOT_CHANCE", 3)
+ACTIVITY_BASE_REWARD = _env_int("ACTIVITY_BASE_REWARD", 10)
+ACTIVITY_STREAK_CAP = _env_int("ACTIVITY_STREAK_CAP", 50)
+GAMBLE_MIN = _env_int("GAMBLE_MIN", 10)
+GAMBLE_MAX = _env_int("GAMBLE_MAX", 500)
+GAMBLE_COOLDOWN_SEC = _env_int("GAMBLE_COOLDOWN_SEC", 30)
+GAMBLE_PAYOUT_MULT = float(os.getenv("GAMBLE_PAYOUT_MULT", "1.85"))
+DUEL_MIN = _env_int("DUEL_MIN", 15)
+DUEL_MAX = _env_int("DUEL_MAX", 1000)
+DUEL_TIMEOUT_SEC = _env_int("DUEL_TIMEOUT_SEC", 120)
 EMOJI_CALIBRATION = os.getenv("EMOJI_CALIBRATION", "<:Calibration:1502664167532793856>")
 EMOJI_STATIC = os.getenv("EMOJI_STATIC", "<:Static:1502385956450336818>")
 EMOJI_NULL = os.getenv("EMOJI_NULL", "<:Null:1502385996455612537>")

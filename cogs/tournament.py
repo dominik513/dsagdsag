@@ -10,9 +10,10 @@ from utils.lobby_generator import generate_lobby
 from utils.helpers import (
     create_gather_embed, create_teams_embed,
     create_live_match_embed, create_result_embed, create_history_embed,
-    create_void_embed, create_match_log_embed,
-    PositionButtons, SoloButtons,
+    create_void_embed, create_match_log_embed, create_mode_pick_embed,
+    PositionButtons, SoloButtons, DuoButtons,
 )
+from utils.game_modes import max_players, rating_mode, is_small_lobby
 from utils.match_integrity import analyze_match
 from config import (
     REGISTRATION_CHANNEL_ID, ADMIN_CHANNEL_ID, DEFAULT_GATHER_TIMEOUT,
@@ -20,7 +21,10 @@ from config import (
     INTEGRITY_MIN_MAPPED_PLAYERS, INTEGRITY_MIN_DEATHS_5X5, INTEGRITY_MIN_DEATHS_1X1,
     INTEGRITY_MAX_KDA_FEED, INTEGRITY_BLOWOUT_SCORE_DIFF, INTEGRITY_BLOWOUT_MAX_MINUTES,
     MVP_BONUS_POINTS, STREAK_BONUS_PER_WIN, STREAK_BONUS_MAX, FEED_PENALTY_POINTS,
+    STEAM_API_KEY,
+    CLAN_MATCH_TREASURY_BONUS, CLAN_MATCH_MIN_MEMBERS,
 )
+from utils.steam import SteamLinkError, resolve_steam_profile
 
 HEROES_LIST = [
     "Abaddon", "Alchemist", "Ancient Apparition", "Anti-Mage", "Arc Warden", "Axe",
@@ -177,6 +181,49 @@ class BetView(discord.ui.View):
             return await interaction.response.send_message("<:no:1503121885674868938> Ставки закрыты!", ephemeral=True)
         await interaction.response.send_modal(BetModal(self.cog, self.tid))
 
+class ModeSelectView(discord.ui.View):
+    def __init__(self, cog: "Tournament"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    async def _pick(self, interaction: discord.Interaction, mode: str):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message(
+                "<:no:1503121885674868938> Только администратор может выбрать режим.",
+                ephemeral=True,
+            )
+        if self.cog.active_gather or self.cog.active_matches:
+            return await interaction.response.send_message(
+                "<:no:1503121885674868938> Уже идёт сбор или матч.",
+                ephemeral=True,
+            )
+        await interaction.response.defer()
+        self.cog.picking_mode = False
+        try:
+            embed = discord.Embed(
+                title="🎮 Режим выбран",
+                description=f"Запускается набор: **{mode}**",
+                color=0x2c2f33,
+            )
+            await interaction.message.edit(embed=embed, view=None)
+        except Exception:
+            pass
+        self.cog.mode_pick_message = None
+        await self.cog._create_gather(mode)
+
+    @discord.ui.button(label="5x5", style=discord.ButtonStyle.green, custom_id="mode_pick_5x5", row=0)
+    async def pick_5x5(self, button, interaction):
+        await self._pick(interaction, "5x5")
+
+    @discord.ui.button(label="1x1", style=discord.ButtonStyle.blurple, custom_id="mode_pick_1x1", row=0)
+    async def pick_1x1(self, button, interaction):
+        await self._pick(interaction, "1x1")
+
+    @discord.ui.button(label="2x2", style=discord.ButtonStyle.blurple, custom_id="mode_pick_2x2", row=0)
+    async def pick_2x2(self, button, interaction):
+        await self._pick(interaction, "2x2")
+
+
 class Tournament(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -186,8 +233,9 @@ class Tournament(commands.Cog):
         self.bets_messages = {}
         self.auto_mode = True
         self.auto_task = None
-        self.next_mode = "5x5"
-        self.match_counter = {"5x5": 0, "1x1": 0}
+        self.picking_mode = False
+        self.mode_pick_message = None
+        self.match_counter = {"5x5": 0, "1x1": 0, "2x2": 0}
 
     def _save_draft_picks(self, display_id: int, picks_r: list, picks_d: list):
         for tid, md in self.active_matches.items():
@@ -229,30 +277,70 @@ class Tournament(commands.Cog):
     async def _auto_loop(self):
         await asyncio.sleep(5)
         while self.auto_mode:
-            mode = self.next_mode
-            await self._create_gather(mode)
-            await self._wait_for_match_end()
-            self.next_mode = "1x1" if mode == "5x5" else "5x5"
-            await asyncio.sleep(60)
+            if not self.active_gather and not self.active_matches and not self.picking_mode:
+                await self._post_mode_pick()
+            await self._wait_idle_cycle()
+            await asyncio.sleep(30)
 
-    async def _wait_for_match_end(self):
-        for _ in range(360):
-            if not self.active_matches:
-                return
-            await asyncio.sleep(10)
+    async def _wait_idle_cycle(self):
+        """Ждём: выбор режима → сбор → матч → пауза."""
+        for _ in range(720):
+            if self.active_matches:
+                await asyncio.sleep(10)
+                continue
+            if self.active_gather:
+                await asyncio.sleep(5)
+                continue
+            if self.picking_mode:
+                await asyncio.sleep(5)
+                continue
+            return
 
-    async def _create_gather(self, mode):
-        self.match_counter[mode] += 1
-        display_id = self.match_counter[mode]
-        match_id, lobby_name, password = generate_lobby()
-        tournament_id = models.create_tournament(match_id, lobby_name, password, 0)
-        gather = {"players": {}, "mode": mode, "timeout": DEFAULT_GATHER_TIMEOUT, "message": None, "lobby_name": lobby_name, "password": password, "match_id": match_id, "finalized": False, "display_id": display_id}
-        self.active_gather[tournament_id] = gather
-        view = PositionButtons(self) if mode == "5x5" else SoloButtons(self)
+    async def _post_mode_pick(self):
         channel = self.bot.get_channel(REGISTRATION_CHANNEL_ID)
         if not channel:
             return
-        embed = create_gather_embed(DEFAULT_GATHER_TIMEOUT, mode, {})
+        self.picking_mode = True
+        embed = create_mode_pick_embed()
+        self.mode_pick_message = await channel.send(embed=embed, view=ModeSelectView(self))
+
+    async def _create_gather(self, mode: str):
+        self.picking_mode = False
+        if self.mode_pick_message:
+            try:
+                await self.mode_pick_message.delete()
+            except Exception:
+                pass
+            self.mode_pick_message = None
+
+        self.match_counter[mode] = self.match_counter.get(mode, 0) + 1
+        display_id = self.match_counter[mode]
+        match_id, lobby_name, password = generate_lobby()
+        tournament_id = models.create_tournament(match_id, lobby_name, password, 0)
+        gather = {
+            "players": {},
+            "mode": mode,
+            "timeout": DEFAULT_GATHER_TIMEOUT,
+            "message": None,
+            "lobby_name": lobby_name,
+            "password": password,
+            "match_id": match_id,
+            "finalized": False,
+            "display_id": display_id,
+        }
+        if mode == "2x2":
+            gather["slots"] = {"r1": None, "r2": None, "d1": None, "d2": None}
+        self.active_gather[tournament_id] = gather
+        if mode == "5x5":
+            view = PositionButtons(self)
+        elif mode == "2x2":
+            view = DuoButtons(self)
+        else:
+            view = SoloButtons(self)
+        channel = self.bot.get_channel(REGISTRATION_CHANNEL_ID)
+        if not channel:
+            return
+        embed = create_gather_embed(DEFAULT_GATHER_TIMEOUT, mode, {}, gather.get("slots"))
         message = await channel.send(embed=embed, view=view)
         gather["message"] = message
         for _ in range(DEFAULT_GATHER_TIMEOUT):
@@ -269,7 +357,7 @@ class Tournament(commands.Cog):
             self.active_gather[tournament_id]["finalized"] = True
             await self.finalize_gather(tournament_id)
 
-    async def register_player(self, interaction, position=None):
+    async def register_player(self, interaction, position=None, team_slot: str | None = None):
         active = models.get_active_tournament()
         if not active:
             return await interaction.response.send_message("Нет сбора!", ephemeral=True)
@@ -279,8 +367,16 @@ class Tournament(commands.Cog):
         uid = interaction.user.id
         if uid in g["players"]:
             return await interaction.response.send_message("<:no:1503121885674868938> Уже в сборе!", ephemeral=True)
-        if g["mode"] == "1x1":
+        mode = g["mode"]
+        if mode == "1x1":
             position = 2
+        elif mode == "2x2":
+            if team_slot not in ("r1", "r2", "d1", "d2"):
+                return await interaction.response.send_message("<:no:1503121885674868938> Выберите слот!", ephemeral=True)
+            if g["slots"].get(team_slot):
+                return await interaction.response.send_message("<:no:1503121885674868938> Этот слот занят!", ephemeral=True)
+            position = 2
+            g["slots"][team_slot] = uid
         else:
             count = sum(1 for p in g["players"].values() if p == position)
             if count >= 2:
@@ -288,7 +384,7 @@ class Tournament(commands.Cog):
         g["players"][uid] = position
         models.get_or_create_player(uid, interaction.user.name)
         await self._update_gather(active["id"])
-        mx = 10 if g["mode"] == "5x5" else 2
+        mx = max_players(mode)
         await interaction.response.defer()
         if len(g["players"]) >= mx:
             g["finalized"] = True
@@ -303,7 +399,12 @@ class Tournament(commands.Cog):
             return await interaction.response.send_message("<:no:1503121885674868938> Сбор завершён!", ephemeral=True)
         if interaction.user.id not in g["players"]:
             return await interaction.response.send_message("<:no:1503121885674868938> Вы не в сборе!", ephemeral=True)
-        del g["players"][interaction.user.id]
+        uid = interaction.user.id
+        if g["mode"] == "2x2":
+            for key, slot_uid in g.get("slots", {}).items():
+                if slot_uid == uid:
+                    g["slots"][key] = None
+        del g["players"][uid]
         await self._update_gather(active["id"])
         await interaction.response.defer()
 
@@ -311,7 +412,14 @@ class Tournament(commands.Cog):
         g = self.active_gather.get(tid)
         if g and g["message"] and not g.get("finalized"):
             try:
-                await g["message"].edit(embed=create_gather_embed(max(0, g["timeout"]), g["mode"], g["players"]))
+                await g["message"].edit(
+                    embed=create_gather_embed(
+                        max(0, g["timeout"]),
+                        g["mode"],
+                        g["players"],
+                        g.get("slots"),
+                    )
+                )
             except:
                 pass
 
@@ -322,7 +430,7 @@ class Tournament(commands.Cog):
         players, mode = g["players"], g["mode"]
         display_id = g["display_id"]
         channel = self.bot.get_channel(REGISTRATION_CHANNEL_ID)
-        mx = 10 if mode == "5x5" else 2
+        mx = max_players(mode)
         if len(players) < mx:
             if g["message"]:
                 try:
@@ -333,11 +441,24 @@ class Tournament(commands.Cog):
         ids = list(players.keys())
         if mode == "5x5":
             ids = self._balance_teams(ids)
-        else:
+        elif mode == "1x1":
             random.shuffle(ids)
         if mode == "1x1":
             r_team, d_team = [ids[0]], [ids[1]]
             pos_r, pos_d = {2: ids[0]}, {2: ids[1]}
+        elif mode == "2x2":
+            slots = g.get("slots", {})
+            r_team = [slots["r1"], slots["r2"]]
+            d_team = [slots["d1"], slots["d2"]]
+            if None in r_team + d_team:
+                if g["message"]:
+                    try:
+                        await g["message"].delete()
+                    except Exception:
+                        pass
+                return models.cancel_tournament(tid)
+            pos_r = {2: r_team[0], 12: r_team[1]}
+            pos_d = {2: d_team[0], 12: d_team[1]}
         else:
             r_team, d_team = ids[:5], ids[5:10]
             def assign(team):
@@ -399,7 +520,12 @@ class Tournament(commands.Cog):
                 live_embed = create_live_match_embed(display_id, mode, r_team, d_team, pos_r, pos_d)
                 md["live_message"] = await channel.send(embed=live_embed)
                 all_p = list(pos_r.values()) + list(pos_d.values())
-                await channel.send(f"📢 {' '.join(f'<@{u}>' for u in all_p)}\nЛобби: `{g['lobby_name']}` | `{g['password']}`")
+                mode_hint = "Мид 2x2 — по 2 игрока на мид!" if mode == "2x2" else "Мид-дуэль!"
+                await channel.send(
+                    f"📢 {' '.join(f'<@{u}>' for u in all_p)}\n"
+                    f"{mode_hint}\n"
+                    f"Лобби: `{g['lobby_name']}` | `{g['password']}`"
+                )
 
         if channel:
             bets_embed = discord.Embed(title="💰 Ставки", color=0x2c2f33)
@@ -412,7 +538,7 @@ class Tournament(commands.Cog):
         asyncio.create_task(self._match_timeout(tid))
 
     def _balance_teams(self, ids):
-        players_with_zxc = [(uid, models.get_zxc_rating(uid)[0]) for uid in ids]
+        players_with_zxc = [(uid, models.get_zxc_rating(uid, "5x5")[0]) for uid in ids]
         players_with_zxc.sort(key=lambda x: x[1], reverse=True)
         team_a, team_b = [], []
         for i, (uid, _) in enumerate(players_with_zxc):
@@ -481,12 +607,23 @@ class Tournament(commands.Cog):
                     heroes = {}
                     hero_data = cur.get("hero", {})
                     if hero_data and hero_data.get("name"):
-                        if md["mode"] == "1x1":
+                        if is_small_lobby(md["mode"]):
                             player_team = cur.get("player_team", "")
-                            if player_team == "radiant":
-                                heroes[str(md["radiant"][0])] = hero_data["name"]
-                            else:
-                                heroes[str(md["dire"][0])] = hero_data["name"]
+                            gsi_name = player_data.get("name", "")
+                            team_uids = md["radiant"] if player_team == "radiant" else md["dire"]
+                            for uid in team_uids:
+                                user = self.bot.get_user(uid)
+                                p = models.get_player(uid)
+                                dota = (p or {}).get("dota_name") or ""
+                                if user and (
+                                    user.name == gsi_name
+                                    or user.display_name == gsi_name
+                                    or dota.lower() == gsi_name.lower()
+                                ):
+                                    heroes[str(uid)] = hero_data["name"]
+                                    break
+                            if not any(str(u) in heroes for u in team_uids) and team_uids:
+                                heroes[str(team_uids[0])] = hero_data["name"]
                     await md["live_message"].edit(embed=create_live_match_embed(
                         md["display_id"], md["mode"], md["radiant"], md["dire"],
                         md["pos_radiant"], md["pos_dire"], sc, cl, ns, heroes
@@ -688,8 +825,9 @@ class Tournament(commands.Cog):
         player_stats = ctx["player_stats"]
         match_details = gsi_match.get("match_details") or {}
         mapped = ctx["mapped"]
-        avg_winner_zxc = models.get_team_avg_zxc(wteam)
-        avg_loser_zxc = models.get_team_avg_zxc(lteam)
+        rmode = rating_mode(md["mode"])
+        avg_winner_zxc = models.get_team_avg_zxc(wteam, rmode)
+        avg_loser_zxc = models.get_team_avg_zxc(lteam, rmode)
         mvp_uid = ctx.get("mvp_uid")
 
         for u in wteam:
@@ -710,10 +848,10 @@ class Tournament(commands.Cog):
                 hero=ctx["heroes_by_uid"].get(str(u)),
                 dota_name=models.get_player_dota_name(u),
             )
-            if not models.is_calibrated(u, md["mode"]):
-                models.update_zxc_calibration(u, k, d, a, True, md["mode"], lh, dn)
+            if not models.is_calibrated(u, rmode):
+                models.update_zxc_calibration(u, k, d, a, True, rmode, lh, dn)
             else:
-                models.update_zxc_after_calibration(u, k, d, a, True, avg_winner_zxc, avg_loser_zxc, md["mode"])
+                models.update_zxc_after_calibration(u, k, d, a, True, avg_winner_zxc, avg_loser_zxc, rmode)
 
         for u in lteam:
             st = mapped.get(u, {})
@@ -729,16 +867,23 @@ class Tournament(commands.Cog):
                 hero=ctx["heroes_by_uid"].get(str(u)),
                 dota_name=models.get_player_dota_name(u),
             )
-            if not models.is_calibrated(u, md["mode"]):
-                models.update_zxc_calibration(u, k, d, a, False, md["mode"], lh, dn)
+            if not models.is_calibrated(u, rmode):
+                models.update_zxc_calibration(u, k, d, a, False, rmode, lh, dn)
             else:
-                models.update_zxc_after_calibration(u, k, d, a, False, avg_loser_zxc, avg_winner_zxc, md["mode"])
+                models.update_zxc_after_calibration(u, k, d, a, False, avg_loser_zxc, avg_winner_zxc, rmode)
 
         if tid in self.bets:
             for uid, bet in self.bets[tid].items():
                 if bet["team"] == winner:
                     models.add_points(uid, bet["amount"] * 2, count_match=False)
         self.bets.pop(tid, None)
+
+        clan_results = models.process_clan_match_result(
+            wteam,
+            lteam,
+            treasury_bonus=CLAN_MATCH_TREASURY_BONUS,
+            min_members=CLAN_MATCH_MIN_MEMBERS,
+        )
 
         models.set_tournament_winner(tid, winner)
         models.save_match_duration(tid, md["clock_time"])
@@ -760,6 +905,13 @@ class Tournament(commands.Cog):
             )
             if mvp_uid:
                 embed.add_field(name="⭐ MVP", value=f"<@{mvp_uid}> (+{MVP_BONUS_POINTS} очков)", inline=False)
+            for cr in clan_results:
+                if cr.get("win"):
+                    embed.add_field(
+                        name=f"🏰 Клан [{cr['tag']}]",
+                        value=f"+{cr['treasury_bonus']} в казну ({cr['members']} в пати)",
+                        inline=True,
+                    )
             await channel.send(embed=embed)
 
         await self._send_match_log(md, winner, ctx, voided=False)
@@ -775,6 +927,49 @@ class Tournament(commands.Cog):
         await ctx.followup.send(
             f"<:yes:1503121926128664766> Dota-ник **{name}** привязан.\n"
             "Это нужно для статистики, логов и антифида.",
+            ephemeral=True,
+        )
+
+    @discord.slash_command(
+        name="link_steam",
+        description="Привязать профиль Steam к Discord (по ссылке)",
+        guild_ids=[GUILD_ID],
+    )
+    async def link_steam(
+        self,
+        ctx: discord.ApplicationContext,
+        steam_url: str = discord.Option(
+            description="Ссылка на профиль Steam (profiles/… или id/…)",
+        ),
+    ):
+        await ctx.defer(ephemeral=True)
+        loop = asyncio.get_running_loop()
+        try:
+            steam_id64, dota_name, profile_url = await loop.run_in_executor(
+                None, resolve_steam_profile, steam_url.strip(), STEAM_API_KEY
+            )
+        except SteamLinkError as e:
+            return await ctx.followup.send(f"<:no:1503121885674868938> {e}", ephemeral=True)
+        except Exception as e:
+            return await ctx.followup.send(
+                f"<:no:1503121885674868938> Ошибка при проверке профиля: `{e}`",
+                ephemeral=True,
+            )
+
+        other = models.get_discord_id_by_steam_id(steam_id64)
+        if other and other != ctx.author.id:
+            return await ctx.followup.send(
+                "<:no:1503121885674868938> Этот Steam-профиль уже привязан к другому Discord-аккаунту.",
+                ephemeral=True,
+            )
+
+        models.get_or_create_player(ctx.author.id, ctx.author.name)
+        models.set_player_steam_link(ctx.author.id, steam_id64, dota_name)
+        await ctx.followup.send(
+            f"<:yes:1503121926128664766> Профиль привязан.\n"
+            f"• Steam: {profile_url}\n"
+            f"• Dota-ник: **{dota_name}**\n\n"
+            "Ник подтянут из профиля Dota/Steam — если в игре другой ник, уточните через `/link_dota`.",
             ephemeral=True,
         )
 
@@ -812,8 +1007,15 @@ class Tournament(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def auto_stop(self, ctx):
         self.auto_mode = False
+        self.picking_mode = False
         if self.auto_task:
             self.auto_task.cancel()
+        if self.mode_pick_message:
+            try:
+                await self.mode_pick_message.delete()
+            except Exception:
+                pass
+            self.mode_pick_message = None
         await ctx.respond("<:yes:1503121926128664766> Остановлены.", ephemeral=True)
 
     @discord.slash_command(name="auto_start", description="Запустить", guild_ids=[GUILD_ID])
@@ -823,7 +1025,22 @@ class Tournament(commands.Cog):
             return await ctx.respond("<:no:1503121885674868938> Уже запущены!", ephemeral=True)
         self.auto_mode = True
         self.auto_task = asyncio.create_task(self._auto_loop())
-        await ctx.respond("<:yes:1503121926128664766> Запущены!", ephemeral=True)
+        await ctx.respond(
+            "<:yes:1503121926128664766> Авто-цикл запущен.\n"
+            "Сначала появится **выбор режима** (5x5 / 1x1 / 2x2), затем набор.",
+            ephemeral=True,
+        )
+
+    @discord.slash_command(name="pick_mode", description="Открыть выбор режима турнира (админ)", guild_ids=[GUILD_ID])
+    @commands.has_permissions(administrator=True)
+    async def pick_mode(self, ctx: discord.ApplicationContext):
+        if self.active_gather or self.active_matches:
+            return await ctx.respond("<:no:1503121885674868938> Уже идёт сбор или матч.", ephemeral=True)
+        if self.picking_mode:
+            return await ctx.respond("<:no:1503121885674868938> Выбор режима уже открыт.", ephemeral=True)
+        await ctx.defer(ephemeral=True)
+        await self._post_mode_pick()
+        await ctx.followup.send("<:yes:1503121926128664766> Выбор режима опубликован в канале регистрации.", ephemeral=True)
 
     @discord.slash_command(name="gsi_status", description="Статус", guild_ids=[GUILD_ID])
     async def gsi_status(self, ctx):
@@ -834,6 +1051,8 @@ class Tournament(commands.Cog):
         embed.add_field(name="Авто", value="<:yes:1503121926128664766> Вкл" if self.auto_mode else "<:no:1503121885674868938> Выкл", inline=True)
         embed.add_field(name="5x5", value=f"#{self.match_counter.get('5x5', 0)}", inline=True)
         embed.add_field(name="1x1", value=f"#{self.match_counter.get('1x1', 0)}", inline=True)
+        embed.add_field(name="2x2", value=f"#{self.match_counter.get('2x2', 0)}", inline=True)
+        embed.add_field(name="Выбор режима", value="ожидает" if self.picking_mode else "—", inline=True)
         await ctx.respond(embed=embed, ephemeral=True)
 
     @discord.slash_command(name="match_history", description="История", guild_ids=[GUILD_ID])
@@ -851,6 +1070,13 @@ class Tournament(commands.Cog):
             g["finalized"] = True
         self.active_gather.clear()
         self.active_matches.clear()
+        self.picking_mode = False
+        if self.mode_pick_message:
+            try:
+                await self.mode_pick_message.delete()
+            except Exception:
+                pass
+            self.mode_pick_message = None
         await ctx.respond("<:yes:1503121926128664766> Сброшено.", ephemeral=True)
 
 def setup(bot):

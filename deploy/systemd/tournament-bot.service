@@ -26,7 +26,8 @@
  ProtectSystem=strict
  ReadWritePaths=/opt/tournament-bot
  LockPersonality=true
- MemoryDenyWriteExecute=true
+ # MemoryDenyWriteExecute=true
+# ^ отключено: на некоторых VPS роняет Python/Discord при старте
  RestrictSUIDSGID=true
  RestrictRealtime=true
  RestrictNamespaces=true

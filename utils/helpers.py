@@ -5,6 +5,7 @@ from config import (
     WINNER_POINTS, LOSER_POINTS, EMOJI_CARRY, EMOJI_MID, EMOJI_OFFLANE, EMOJI_SUP4, EMOJI_SUP5,
     EMOJI_RADIANT, EMOJI_DIRE, EMOJI_BET, EMOJI_POINTS, EMOJI_CLOCK, EMOJI_KILLS, EMOJI_DEATHS, EMOJI_ASSISTS,
 )
+from utils.game_modes import max_players, mode_title, is_small_lobby
 import sqlite3
 from config import DATABASE_PATH
 
@@ -29,13 +30,32 @@ def get_clan_tag(discord_id: int) -> str:
 def make_emoji(emoji_id: int) -> discord.PartialEmoji:
     return discord.PartialEmoji(name="emoji", id=emoji_id)
 
-def create_gather_embed(time_left: int, mode: str, players: dict) -> discord.Embed:
-    max_players = 10 if mode == "5x5" else 2
+def create_gather_embed(time_left: int, mode: str, players: dict, slots: dict | None = None) -> discord.Embed:
+    mx = max_players(mode)
     progress = len(players)
     m, s = time_left // 60, time_left % 60
-    title = "Сбор 5x5" if mode == "5x5" else "Мид-дуэль"
-    embed = discord.Embed(title=title, description=f"**{progress}/{max_players}**  •  {EMOJI_CLOCK} {m:02d}:{s:02d}", color=EMBED_COLOR)
-    if players:
+    embed = discord.Embed(
+        title=mode_title(mode),
+        description=f"**{progress}/{mx}**  •  {EMOJI_CLOCK} {m:02d}:{s:02d}",
+        color=EMBED_COLOR,
+    )
+    if mode == "2x2" and slots:
+        slot_labels = {
+            "r1": f"{EMOJI_RADIANT} Свет #1",
+            "r2": f"{EMOJI_RADIANT} Свет #2",
+            "d1": f"{EMOJI_DIRE} Тьма #1",
+            "d2": f"{EMOJI_DIRE} Тьма #2",
+        }
+        lines = []
+        for key, label in slot_labels.items():
+            uid = slots.get(key)
+            if uid:
+                tag = get_clan_tag(uid)
+                lines.append(f"{EMOJI_MID} {label}: {tag} <@{uid}>")
+            else:
+                lines.append(f"{EMOJI_MID} {label}: *свободно*")
+        embed.add_field(name="Слоты (мид)", value="\n".join(lines), inline=False)
+    elif players:
         lines = []
         for uid, pos in players.items():
             tag = get_clan_tag(uid)
@@ -44,16 +64,50 @@ def create_gather_embed(time_left: int, mode: str, players: dict) -> discord.Emb
         embed.add_field(name="Игроки", value="\n".join(lines), inline=False)
     else:
         embed.add_field(name="Игроки", value="🔲 Ожидание игроков...", inline=False)
-    embed.set_footer(text="Выберите позицию кнопкой ниже")
+    footers = {
+        "5x5": "Выберите позицию кнопкой ниже",
+        "1x1": "Нажмите «Вступить» для мид-дуэли",
+        "2x2": "Выберите слот: 2 на мид Света, 2 на мид Тьмы",
+    }
+    embed.set_footer(text=footers.get(mode, ""))
     return embed
 
+
+def create_mode_pick_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🎮 Выбор режима турнира",
+        description=(
+            "Администратор выбирает режим — после этого откроется **набор игроков**.\n\n"
+            "• **5x5** — классика, 10 игроков, драфт\n"
+            "• **1x1** — мид-дуэль, 2 игрока\n"
+            "• **2x2** — 4 игрока, по 2 на мид с каждой стороны"
+        ),
+        color=EMBED_COLOR,
+    )
+    embed.set_footer(text="Только для администраторов сервера")
+    return embed
+
+def _mid_team_lines(uids: list) -> str:
+    lines = []
+    for uid in uids:
+        tag = get_clan_tag(uid)
+        lines.append(f"{EMOJI_MID} {tag} <@{uid}> — Mid")
+    return "\n".join(lines) if lines else "—"
+
+
 def create_teams_embed(tid: int, lobby_name: str, password: str, mode: str, pos_r: dict, pos_d: dict) -> discord.Embed:
-    embed = discord.Embed(title=f"⚔️ Матч #{tid}" if mode == "5x5" else f"🔥 Мид-дуэль #{tid}", color=EMBED_COLOR)
+    titles = {"5x5": f"⚔️ Матч #{tid}", "1x1": f"🔥 Мид-дуэль #{tid}", "2x2": f"🔥 Мид 2x2 #{tid}"}
+    embed = discord.Embed(title=titles.get(mode, f"⚔️ Матч #{tid}"), color=EMBED_COLOR)
     if mode == "1x1":
         tag_r = get_clan_tag(pos_r[2])
         tag_d = get_clan_tag(pos_d[2])
         embed.add_field(name=f"{EMOJI_RADIANT} Свет", value=f"{EMOJI_MID} {tag_r} <@{pos_r[2]}> — Mid", inline=True)
         embed.add_field(name=f"{EMOJI_DIRE} Тьма", value=f"{EMOJI_MID} {tag_d} <@{pos_d[2]}> — Mid", inline=True)
+    elif mode == "2x2":
+        r_uids = list(pos_r.values())
+        d_uids = list(pos_d.values())
+        embed.add_field(name=f"{EMOJI_RADIANT} Свет", value=_mid_team_lines(r_uids), inline=True)
+        embed.add_field(name=f"{EMOJI_DIRE} Тьма", value=_mid_team_lines(d_uids), inline=True)
     else:
         r_lines, d_lines = [], []
         for p, uid in sorted(pos_r.items()):
@@ -71,8 +125,8 @@ def create_teams_embed(tid: int, lobby_name: str, password: str, mode: str, pos_
 
 def create_live_match_embed(tid: int, mode: str, radiant: list, dire: list, pos_r: dict, pos_d: dict, score=(0,0), clock=0, state="waiting", heroes: dict = None) -> discord.Embed:
     colors = {"waiting": EMBED_COLOR, "in_progress": 0x43b581, "finished": 0xfaa61a}
-    title = "🔥 Мид-дуэль" if mode == "1x1" else "⚔️ Матч 5x5"
-    embed = discord.Embed(title=f"{title} #{tid}", color=colors.get(state, EMBED_COLOR))
+    titles = {"5x5": "⚔️ Матч 5x5", "1x1": "🔥 Мид-дуэль", "2x2": "🔥 Мид 2x2"}
+    embed = discord.Embed(title=f"{titles.get(mode, '⚔️ Матч')} #{tid}", color=colors.get(state, EMBED_COLOR))
     m, s = clock // 60, clock % 60
     if state == "in_progress":
         embed.description = f"{EMOJI_RADIANT} **{score[0]}** - **{score[1]}** {EMOJI_DIRE} | {EMOJI_CLOCK} {m:02d}:{s:02d}"
@@ -80,18 +134,29 @@ def create_live_match_embed(tid: int, mode: str, radiant: list, dire: list, pos_
         embed.description = f"Завершён | {EMOJI_RADIANT} **{score[0]}** - **{score[1]}** {EMOJI_DIRE} | {EMOJI_CLOCK} {m:02d}:{s:02d}"
     else:
         embed.description = "⏳ Ожидание..."
-    if mode == "1x1":
-        tag_r = get_clan_tag(radiant[0])
-        tag_d = get_clan_tag(dire[0])
-        r_hero = heroes.get(str(radiant[0]), "") if heroes else ""
-        d_hero = heroes.get(str(dire[0]), "") if heroes else ""
-        r_text = f"{tag_r} <@{radiant[0]}>"
-        d_text = f"{tag_d} <@{dire[0]}>"
-        if r_hero:
-            r_text += f"\n*{r_hero}*"
-            embed.set_thumbnail(url=HERO_IMAGE_URL.format(r_hero.lower().replace(" ", "_")))
-        if d_hero:
-            d_text += f"\n*{d_hero}*"
+    if is_small_lobby(mode):
+        if mode == "1x1":
+            r_list, d_list = radiant[:1], dire[:1]
+        else:
+            r_list, d_list = radiant, dire
+
+        def _side(uids: list) -> str:
+            parts = []
+            for uid in uids:
+                tag = get_clan_tag(uid)
+                line = f"{tag} <@{uid}>"
+                h = heroes.get(str(uid), "") if heroes else ""
+                if h:
+                    line += f"\n*{h}*"
+                parts.append(line)
+            return "\n".join(parts) if parts else "—"
+
+        r_text = _side(r_list)
+        d_text = _side(d_list)
+        if heroes and r_list:
+            h0 = heroes.get(str(r_list[0]), "")
+            if h0:
+                embed.set_thumbnail(url=HERO_IMAGE_URL.format(h0.lower().replace(" ", "_")))
         embed.add_field(name=f"{EMOJI_RADIANT} Свет", value=r_text, inline=True)
         embed.add_field(name=f"{EMOJI_DIRE} Тьма", value=d_text, inline=True)
     else:
@@ -243,7 +308,13 @@ def create_history_embed(matches: list) -> discord.Embed:
         embed.description = "Нет матчей"
         return embed
     for m in matches:
-        mode = "1x1" if len(m["team_radiant"]) == 1 else "5x5"
+        r_n = len(m["team_radiant"])
+        if r_n >= 5:
+            mode = "5x5"
+        elif r_n == 2:
+            mode = "2x2"
+        else:
+            mode = "1x1"
         winner = f"{EMOJI_RADIANT} Свет" if m["winner"] == "radiant" else f"{EMOJI_DIRE} Тьма"
         embed.add_field(name=f"#{m['id']} — {mode}", value=winner, inline=False)
     return embed
@@ -272,4 +343,27 @@ class SoloButtons(discord.ui.View):
     @discord.ui.button(label="Вступить", style=discord.ButtonStyle.grey, emoji=make_emoji(MID_EMOJI_ID), custom_id="solo_reg")
     async def solo(self, b, i): await self.cog.register_player(i)
     @discord.ui.button(label="Выйти", style=discord.ButtonStyle.grey, emoji=make_emoji(LEAVE_EMOJI_ID), custom_id="solo_leave")
+    async def leave_btn(self, b, i): await self.cog.leave_player(i)
+
+
+class DuoButtons(discord.ui.View):
+    """2x2: два мида на каждую сторону."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Свет #1", style=discord.ButtonStyle.grey, emoji=make_emoji(MID_EMOJI_ID), custom_id="duo_r1", row=0)
+    async def r1(self, b, i): await self.cog.register_player(i, team_slot="r1")
+
+    @discord.ui.button(label="Свет #2", style=discord.ButtonStyle.grey, emoji=make_emoji(MID_EMOJI_ID), custom_id="duo_r2", row=0)
+    async def r2(self, b, i): await self.cog.register_player(i, team_slot="r2")
+
+    @discord.ui.button(label="Тьма #1", style=discord.ButtonStyle.grey, emoji=make_emoji(MID_EMOJI_ID), custom_id="duo_d1", row=1)
+    async def d1(self, b, i): await self.cog.register_player(i, team_slot="d1")
+
+    @discord.ui.button(label="Тьма #2", style=discord.ButtonStyle.grey, emoji=make_emoji(MID_EMOJI_ID), custom_id="duo_d2", row=1)
+    async def d2(self, b, i): await self.cog.register_player(i, team_slot="d2")
+
+    @discord.ui.button(label="Выйти", style=discord.ButtonStyle.grey, emoji=make_emoji(LEAVE_EMOJI_ID), custom_id="duo_leave", row=2)
     async def leave_btn(self, b, i): await self.cog.leave_player(i)

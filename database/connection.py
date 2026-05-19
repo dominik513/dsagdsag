@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import sqlite3
 from config import DATABASE_PATH
@@ -108,6 +110,14 @@ def init_db():
         ("zxc_1x1", "INTEGER DEFAULT 1000"),
         ("calibration_1x1", "INTEGER DEFAULT 0"),
         ("last_daily_at", "TEXT"),
+        ("last_weekly_at", "TEXT"),
+        ("last_lucky_at", "TEXT"),
+        ("last_activity_at", "TEXT"),
+        ("activity_streak", "INTEGER DEFAULT 0"),
+        ("best_activity_streak", "INTEGER DEFAULT 0"),
+        ("last_gamble_at", "TEXT"),
+        ("duel_wins", "INTEGER DEFAULT 0"),
+        ("duel_losses", "INTEGER DEFAULT 0"),
     ]:
         try:
             cursor.execute(f"ALTER TABLE players ADD COLUMN {col} {col_type}")
@@ -119,11 +129,26 @@ def init_db():
         ("banner", "TEXT"),
         ("description", "TEXT"),
         ("chat_id", "INTEGER"),
+        ("treasury", "INTEGER DEFAULT 0"),
+        ("xp", "INTEGER DEFAULT 0"),
+        ("level", "INTEGER DEFAULT 1"),
     ]:
         try:
             cursor.execute(f"ALTER TABLE clans ADD COLUMN {col} {col_type}")
         except:
             pass
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS clan_treasury_log (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            clan_id         INTEGER NOT NULL,
+            actor_id        INTEGER,
+            amount          INTEGER NOT NULL,
+            reason          TEXT NOT NULL,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (clan_id) REFERENCES clans(id)
+        )
+    """)
 
     try:
         cursor.execute("ALTER TABLE clan_members ADD COLUMN role TEXT DEFAULT 'Участник'")
@@ -144,6 +169,7 @@ def init_db():
 
     for col, col_type in [
         ("dota_name", "TEXT"),
+        ("steam_id", "TEXT"),
         ("win_streak", "INTEGER DEFAULT 0"),
         ("best_win_streak", "INTEGER DEFAULT 0"),
     ]:

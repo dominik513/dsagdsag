@@ -1,10 +1,19 @@
+from __future__ import annotations
+
 import discord
 from discord.ext import commands
 from database import models
-from config import GUILD_ID
+from database.models import ClanError
+from config import (
+    GUILD_ID,
+    CLAN_XP_PER_100_DEPOSIT,
+    CLAN_LEVEL_XP_BASE,
+    EMOJI_POINTS,
+)
 
 EMBED_COLOR = 0x2c2f33
 CLAN_CREATE_COST = 500
+ROLE_HINT = "Роли: **Участник**, **Офицер**, **Казначей** (снимают из казны), **Владелец**"
 
 class ClanInviteView(discord.ui.View):
     def __init__(self, clan_name, clan_tag, clan_id, inviter_id, target_id):
@@ -152,6 +161,7 @@ class DeleteClanModal(discord.ui.Modal):
             channel = interaction.guild.get_channel(chat_id)
             if channel:
                 await channel.delete()
+        conn.execute("DELETE FROM clan_treasury_log WHERE clan_id = ?", (self.clan_id,))
         conn.execute("DELETE FROM clan_members WHERE clan_id = ?", (self.clan_id,))
         conn.execute("DELETE FROM clans WHERE id = ?", (self.clan_id,))
         conn.commit()
@@ -201,7 +211,10 @@ class Clans(commands.Cog):
         conn.execute("INSERT INTO clans (name, tag, owner_id, chat_id) VALUES (?, ?, ?, ?)", (name, tag, ctx.author.id, channel.id))
         conn.commit()
         clan_id = conn.execute("SELECT id FROM clans WHERE owner_id = ?", (ctx.author.id,)).fetchone()["id"]
-        conn.execute("INSERT INTO clan_members (clan_id, discord_id) VALUES (?, ?)", (clan_id, ctx.author.id))
+        conn.execute(
+            "INSERT INTO clan_members (clan_id, discord_id, role) VALUES (?, ?, ?)",
+            (clan_id, ctx.author.id, "Владелец"),
+        )
         conn.commit()
         conn.close()
         await ctx.respond(f"<:yes:1503121926128664766> Клан **[{tag}] {name}** создан! Канал: {channel.mention}")
@@ -289,9 +302,18 @@ class Clans(commands.Cog):
         if row["banner"]:
             embed.set_image(url=row["banner"])
         embed.add_field(name="<:leader:1503017771871637685> Владелец", value=owner.mention if owner else "—", inline=True)
+        treasury = row["treasury"] if row["treasury"] is not None else 0
+        level = row["level"] if row["level"] is not None else 1
+        xp = row["xp"] if row["xp"] is not None else 0
         embed.add_field(name="<:winrate:1502718521275187200> Статистика", value=f"Побед: {row['wins']}\nПоражений: {row['losses']}", inline=True)
+        embed.add_field(
+            name=f"{EMOJI_POINTS} Казна",
+            value=f"**{treasury}** очков\nУровень **{level}** ({xp} XP)",
+            inline=True,
+        )
         embed.add_field(name="<:members:1503017912619896924> Участников", value=str(row["member_count"]), inline=True)
         embed.add_field(name="<:kubok:1502711350689005740> Рейтинг кланов", value=f"**#{clan_rank}** место", inline=True)
+        embed.set_footer(text="Казна: /clan_deposit · /clan_bank · " + ROLE_HINT[:80])
         member_list = []
         for m in members:
             role_text = f" — *{m['role']}*" if m['role'] else ""
@@ -301,18 +323,182 @@ class Clans(commands.Cog):
         await ctx.respond(embed=embed, view=view)
 
     @discord.slash_command(name="clans_top", description="Топ кланов", guild_ids=[GUILD_ID])
-    async def clans_top(self, ctx):
+    async def clans_top(
+        self,
+        ctx: discord.ApplicationContext,
+        sort_by: str = discord.Option(
+            choices=["wins", "treasury", "level"],
+            description="Сортировка",
+            default="wins",
+        ),
+    ):
+        order = {
+            "wins": "wins DESC, treasury DESC",
+            "treasury": "treasury DESC, wins DESC",
+            "level": "level DESC, xp DESC",
+        }.get(sort_by, "wins DESC")
         conn = models.get_connection()
-        rows = conn.execute("SELECT name, tag, wins, losses, avatar FROM clans ORDER BY wins DESC LIMIT 10").fetchall()
+        rows = conn.execute(
+            f"SELECT name, tag, wins, losses, treasury, level, avatar FROM clans ORDER BY {order} LIMIT 10"
+        ).fetchall()
         conn.close()
         if not rows:
             return await ctx.respond("Нет кланов.", ephemeral=True)
-        embed = discord.Embed(title="<:kubok:1502711350689005740> Сезонный рейтинг кланов", color=EMBED_COLOR)
+        titles = {"wins": "по победам", "treasury": "по казне", "level": "по уровню"}
+        embed = discord.Embed(
+            title=f"<:kubok:1502711350689005740> Топ кланов ({titles.get(sort_by, '')})",
+            color=EMBED_COLOR,
+        )
         text = ""
         for i, r in enumerate(rows, 1):
             emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-            text += f"{emoji} **[{r['tag']}] {r['name']}** — {r['wins']}W/{r['losses']}L\n"
+            extra = f" · {r['treasury'] or 0}💰 · ур.{r['level'] or 1}"
+            text += f"{emoji} **[{r['tag']}] {r['name']}** — {r['wins']}W/{r['losses']}L{extra}\n"
         embed.description = text
+        await ctx.respond(embed=embed)
+
+    @discord.slash_command(name="clan_deposit", description="Вложить очки в казну клана", guild_ids=[GUILD_ID])
+    async def clan_deposit(self, ctx: discord.ApplicationContext, amount: int):
+        await ctx.defer(ephemeral=True)
+        try:
+            models.get_or_create_player(ctx.author.id, ctx.author.name)
+            res = models.clan_deposit(
+                ctx.author.id,
+                amount,
+                xp_base=CLAN_LEVEL_XP_BASE,
+                xp_per_100=CLAN_XP_PER_100_DEPOSIT,
+            )
+            await ctx.followup.send(
+                f"<:yes:1503121926128664766> В казну: **+{amount}**.\n"
+                f"Казна: **{res['treasury']}** · Уровень **{res['level']}**",
+                ephemeral=True,
+            )
+        except ClanError as e:
+            await ctx.followup.send(f"<:no:1503121885674868938> {e}", ephemeral=True)
+
+    @discord.slash_command(name="clan_withdraw", description="Снять из казны (владелец/офицер)", guild_ids=[GUILD_ID])
+    async def clan_withdraw(self, ctx: discord.ApplicationContext, amount: int):
+        await ctx.defer(ephemeral=True)
+        try:
+            res = models.clan_withdraw(ctx.author.id, amount)
+            await ctx.followup.send(
+                f"<:yes:1503121926128664766> Снято **{amount}** на ваш счёт.\nКазна: **{res['treasury']}**",
+                ephemeral=True,
+            )
+        except ClanError as e:
+            await ctx.followup.send(f"<:no:1503121885674868938> {e}", ephemeral=True)
+
+    @discord.slash_command(name="clan_pay", description="Выплата из казны участнику (владелец)", guild_ids=[GUILD_ID])
+    async def clan_pay(self, ctx: discord.ApplicationContext, member: discord.Member, amount: int):
+        await ctx.defer(ephemeral=True)
+        try:
+            models.get_or_create_player(member.id, member.name)
+            res = models.clan_pay_member(ctx.author.id, member.id, amount)
+            await ctx.followup.send(
+                f"<:yes:1503121926128664766> {member.mention} получил **{amount}** из казны.\n"
+                f"Остаток: **{res['treasury']}**",
+                ephemeral=True,
+            )
+        except ClanError as e:
+            await ctx.followup.send(f"<:no:1503121885674868938> {e}", ephemeral=True)
+
+    @discord.slash_command(name="clan_bank", description="Казна и последние операции", guild_ids=[GUILD_ID])
+    async def clan_bank(self, ctx: discord.ApplicationContext):
+        await ctx.defer(ephemeral=True)
+        clan = models.get_clan_membership(ctx.author.id)
+        if not clan:
+            return await ctx.followup.send("<:no:1503121885674868938> Вы не в клане!", ephemeral=True)
+        logs = models.get_clan_treasury_log(clan["id"], 8)
+        treasury = clan.get("treasury") or 0
+        level = clan.get("level") or 1
+        lines = []
+        for entry in logs:
+            sign = "+" if entry["amount"] > 0 else ""
+            who = f"<@{entry['actor_id']}>" if entry["actor_id"] else "система"
+            lines.append(f"`{sign}{entry['amount']}` {entry['reason']} — {who}")
+        embed = discord.Embed(
+            title=f"🏦 Казна [{clan['tag']}] {clan['name']}",
+            description=f"**{treasury}** очков · Уровень **{level}**",
+            color=EMBED_COLOR,
+        )
+        embed.add_field(
+            name="Операции",
+            value="\n".join(lines) if lines else "Пока пусто — внесите через /clan_deposit",
+            inline=False,
+        )
+        embed.set_footer(text=ROLE_HINT)
+        await ctx.followup.send(embed=embed, ephemeral=True)
+
+    @discord.slash_command(name="clan_announce", description="Объявление в клановый чат (владелец)", guild_ids=[GUILD_ID])
+    async def clan_announce(self, ctx: discord.ApplicationContext, message: str):
+        clan = models.get_clan_membership(ctx.author.id)
+        if not clan:
+            return await ctx.respond("<:no:1503121885674868938> Вы не в клане!", ephemeral=True)
+        if clan["owner_id"] != ctx.author.id:
+            return await ctx.respond("<:no:1503121885674868938> Только владелец!", ephemeral=True)
+        if not clan.get("chat_id"):
+            return await ctx.respond("<:no:1503121885674868938> Клановый канал не найден.", ephemeral=True)
+        channel = ctx.guild.get_channel(clan["chat_id"])
+        if not channel:
+            return await ctx.respond("<:no:1503121885674868938> Канал недоступен.", ephemeral=True)
+        embed = discord.Embed(
+            title=f"📢 [{clan['tag']}] Объявление",
+            description=message[:2000],
+            color=EMBED_COLOR,
+        )
+        embed.set_footer(text=f"От {ctx.author.display_name}")
+        await channel.send(embed=embed)
+        await ctx.respond("<:yes:1503121926128664766> Отправлено в клановый чат.", ephemeral=True)
+
+    @discord.slash_command(name="clan_promote", description="Назначить роль (Офицер/Казначей)", guild_ids=[GUILD_ID])
+    async def clan_promote(
+        self,
+        ctx: discord.ApplicationContext,
+        member: discord.Member,
+        role: str = discord.Option(
+            choices=["Офицер", "Казначей", "Участник"],
+            description="Роль в клане",
+        ),
+    ):
+        try:
+            models.clan_set_member_role(ctx.author.id, member.id, role)
+            await ctx.respond(f"<:yes:1503121926128664766> {member.mention} → **{role}**", ephemeral=True)
+        except ClanError as e:
+            await ctx.respond(f"<:no:1503121885674868938> {e}", ephemeral=True)
+
+    @discord.slash_command(name="clan_transfer", description="Передать клан другому участнику", guild_ids=[GUILD_ID])
+    async def clan_transfer(self, ctx: discord.ApplicationContext, member: discord.Member):
+        try:
+            models.clan_transfer_ownership(ctx.author.id, member.id)
+            await ctx.respond(
+                f"<:yes:1503121926128664766> Клан передан {member.mention}. Вы стали участником.",
+                ephemeral=True,
+            )
+        except ClanError as e:
+            await ctx.respond(f"<:no:1503121885674868938> {e}", ephemeral=True)
+
+    @discord.slash_command(name="clan_lookup", description="Инфо о клане по тегу", guild_ids=[GUILD_ID])
+    async def clan_lookup(self, ctx: discord.ApplicationContext, tag: str):
+        conn = models.get_connection()
+        row = conn.execute(
+            """
+            SELECT c.*, (SELECT COUNT(*) FROM clan_members WHERE clan_id = c.id) AS member_count
+            FROM clans c WHERE LOWER(tag) = LOWER(?)
+            """,
+            (tag.strip(),),
+        ).fetchone()
+        conn.close()
+        if not row:
+            return await ctx.respond("<:no:1503121885674868938> Клан не найден.", ephemeral=True)
+        embed = discord.Embed(title=f"[{row['tag']}] {row['name']}", color=EMBED_COLOR)
+        if row["description"]:
+            embed.description = row["description"]
+        if row["avatar"]:
+            embed.set_thumbnail(url=row["avatar"])
+        embed.add_field(name="Побед / поражений", value=f"{row['wins']} / {row['losses']}", inline=True)
+        embed.add_field(name="Казна", value=str(row["treasury"] or 0), inline=True)
+        embed.add_field(name="Уровень", value=str(row["level"] or 1), inline=True)
+        embed.add_field(name="Участников", value=str(row["member_count"]), inline=True)
         await ctx.respond(embed=embed)
 
 def setup(bot):

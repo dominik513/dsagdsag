@@ -4,6 +4,8 @@ import logging
 import os
 
 log = logging.getLogger(__name__)
+# POST /gsi каждую секунду — не засорять journalctl (см. main.py werkzeug level)
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 app = Flask(__name__)
 

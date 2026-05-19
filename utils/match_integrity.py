@@ -43,7 +43,7 @@ def detect_feed(
     deaths = stats.get("deaths", 0)
     assists = stats.get("assists", 0)
     last_hits = stats.get("last_hits", 0)
-    min_deaths = min_deaths_1x1 if mode == "1x1" else min_deaths_5x5
+    min_deaths = min_deaths_1x1 if mode in ("1x1", "2x2") else min_deaths_5x5
     minutes = max(clock_time / 60, 1)
 
     if deaths < min_deaths:
@@ -59,7 +59,7 @@ def detect_feed(
     if _kda_score(stats) < max_kda_feed and deaths >= min_deaths:
         return IntegrityIssue("feed", player_key, f"KDA={kills}/{deaths}/{assists}")
 
-    if mode == "1x1" and minutes >= 8 and last_hits < 30 and deaths >= 8:
+    if mode in ("1x1", "2x2") and minutes >= 8 and last_hits < 30 and deaths >= 8:
         return IntegrityIssue("feed", player_key, f"мало LH ({last_hits}) при {deaths} смертях")
 
     if mode == "5x5" and minutes >= 12 and last_hits < 15 and deaths >= 12:
@@ -153,7 +153,7 @@ def analyze_match(
             IntegrityIssue(
                 "lobby_abuse",
                 "match",
-                f"привязано игроков: {mapped_count}/{len(player_stats)} — используйте /link_dota",
+                f"привязано игроков: {mapped_count}/{len(player_stats)} — используйте /link_steam или /link_dota",
             )
         )
 

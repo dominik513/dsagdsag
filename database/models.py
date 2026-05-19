@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from database.connection import get_connection
 
 def get_tournament(tournament_id: int) -> dict | None:
@@ -118,17 +118,65 @@ def get_player_stats(discord_id: int) -> dict:
     cursor = conn.cursor()
     cursor.execute("SELECT position, COUNT(*) as count FROM tournament_players WHERE discord_id = ? GROUP BY position ORDER BY count DESC LIMIT 1", (discord_id,))
     fav_pos = cursor.fetchone()
-    cursor.execute("SELECT COUNT(*) FROM tournament_players WHERE discord_id = ?", (discord_id,))
-    total_matches = cursor.fetchone()[0]
+    # ВАЖНО: статистика W/L хранится в таблице players.
+    # COUNT(*) по tournament_players может расходиться (например, если админ вручную правит wins/losses),
+    # из‑за чего винрейт может стать > 100%. Поэтому "матчей" считаем как wins+losses.
     player = get_player(discord_id)
+    total_matches = ((player or {}).get("wins") or 0) + ((player or {}).get("losses") or 0)
     conn.close()
     return {"fav_position": fav_pos["position"] if fav_pos else None, "total_matches": total_matches, "wins": player["wins"] if player else 0, "losses": player["losses"] if player else 0, "points": player["points"] if player else 0}
 
 def _get_zxc_column(mode: str) -> str:
-    return "zxc_5x5" if mode == "5x5" else "zxc_1x1"
+    if mode == "5x5":
+        return "zxc_5x5"
+    return "zxc_1x1"  # 1x1 и 2x2
 
 def _get_calib_column(mode: str) -> str:
-    return "calibration_5x5" if mode == "5x5" else "calibration_1x1"
+    if mode == "5x5":
+        return "calibration_5x5"
+    return "calibration_1x1"
+
+RANKS_1X1 = [
+    ("static", 400),
+    ("null", 650),
+    ("pulse", 900),
+    ("vein", 1075),
+    ("echo", 1225),
+    ("haze", 1400),
+    ("vanta", 1650),
+    ("abyss", 1950),
+    ("phantom", 2300),
+    ("eclipse", 2700),
+]
+
+RANKS_5X5 = [
+    ("мусор", 400),
+    ("бронза", 650),
+    ("серебро", 900),
+    ("золото", 1075),
+    ("платина", 1225),
+    ("алмаз", 1400),
+    ("мастер", 1650),
+    ("элита", 1950),
+    ("легенда", 2300),
+    ("титан", 2700),
+]
+
+
+def rating_for_rank(rank_name: str, mode: str = "5x5") -> int | None:
+    """Средний рейтинг внутри тира по названию ранга."""
+    key = (rank_name or "").strip().lower()
+    table = RANKS_1X1 if mode == "1x1" else RANKS_5X5
+    for name, rating in table:
+        if name == key or key in name or name in key:
+            return rating
+    return None
+
+
+def list_rank_names(mode: str = "5x5") -> list[str]:
+    table = RANKS_1X1 if mode == "1x1" else RANKS_5X5
+    return [name.title() if mode == "1x1" else name.capitalize() for name, _ in table]
+
 
 def get_rank_name(rating: int, mode: str = "5x5") -> str:
     if mode == "1x1":
@@ -210,13 +258,15 @@ def is_calibrated(discord_id: int, mode: str = "5x5") -> bool:
     conn.close()
     return row and (row[calib_col] or 0) >= 5
 
-def get_team_avg_zxc(team: list) -> int:
-    if not team: return 1000
+def get_team_avg_zxc(team: list, mode: str = "5x5") -> int:
+    if not team:
+        return 1000
+    col = _get_zxc_column(mode)
     conn = get_connection()
     total = 0
     for uid in team:
-        row = conn.execute("SELECT zxc_5x5 FROM players WHERE discord_id = ?", (uid,)).fetchone()
-        total += row["zxc_5x5"] if row and row["zxc_5x5"] else 1000
+        row = conn.execute(f"SELECT {col} FROM players WHERE discord_id = ?", (uid,)).fetchone()
+        total += row[col] if row and row[col] else 1000
     conn.close()
     return total // len(team)
 
@@ -566,6 +616,35 @@ def set_player_dota_name(discord_id: int, dota_name: str):
     conn.close()
 
 
+def set_player_steam_link(discord_id: int, steam_id64: str, dota_name: str):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE players SET steam_id = ?, dota_name = ? WHERE discord_id = ?",
+        (str(steam_id64).strip(), dota_name.strip(), discord_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_player_steam_id(discord_id: int) -> str | None:
+    conn = get_connection()
+    row = conn.execute("SELECT steam_id FROM players WHERE discord_id = ?", (discord_id,)).fetchone()
+    conn.close()
+    if row and row["steam_id"]:
+        return str(row["steam_id"])
+    return None
+
+
+def get_discord_id_by_steam_id(steam_id64: str) -> int | None:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT discord_id FROM players WHERE steam_id = ?",
+        (str(steam_id64).strip(),),
+    ).fetchone()
+    conn.close()
+    return int(row["discord_id"]) if row else None
+
+
 def get_player_dota_name(discord_id: int) -> str | None:
     conn = get_connection()
     row = conn.execute("SELECT dota_name FROM players WHERE discord_id = ?", (discord_id,)).fetchone()
@@ -601,12 +680,14 @@ def get_registered_name_set(team: list[int]) -> set[str]:
 
 
 def resolve_stats_to_discord(player_stats: dict, team: list[int]) -> dict[int, dict]:
-    """Сопоставить GSI-ник → discord_id."""
+    """Сопоставить GSI-ник / account_id → discord_id."""
+    from utils.steam import steam_id64_to_account_id
+
     result: dict[int, dict] = {}
     conn = get_connection()
     for uid in team:
         row = conn.execute(
-            "SELECT dota_name, username FROM players WHERE discord_id = ?",
+            "SELECT dota_name, username, steam_id FROM players WHERE discord_id = ?",
             (uid,),
         ).fetchone()
         if not row:
@@ -616,7 +697,17 @@ def resolve_stats_to_discord(player_stats: dict, team: list[int]) -> dict[int, d
             keys.add(row["dota_name"].lower())
         if row["username"]:
             keys.add(row["username"].lower())
+        account_keys: set[str] = set()
+        if row["steam_id"]:
+            try:
+                account_keys.add(str(steam_id64_to_account_id(row["steam_id"])))
+            except (TypeError, ValueError):
+                pass
         for gsi_name, stats in player_stats.items():
+            gsi_account = stats.get("account_id") if isinstance(stats, dict) else None
+            if gsi_account is not None and account_keys and str(gsi_account) in account_keys:
+                result[uid] = stats
+                break
             if gsi_name.lower() in keys or gsi_name == str(uid):
                 result[uid] = stats
                 break
@@ -671,3 +762,693 @@ def set_win_streak(discord_id: int, streak: int):
 
 def refund_bet(discord_id: int, amount: int):
     add_points(discord_id, amount, count_match=False)
+
+
+# --- Админ: ручное управление данными ---
+
+_PLAYER_ADMIN_FIELDS = {
+    "points", "wins", "losses", "tournaments",
+    "zxc_5x5", "zxc_1x1", "calibration_5x5", "calibration_1x1",
+    "total_kills", "total_deaths", "total_assists",
+    "win_streak", "best_win_streak", "dota_name", "steam_id", "username",
+}
+
+
+def get_player_full(discord_id: int) -> dict | None:
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM players WHERE discord_id = ?", (discord_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def admin_update_player(discord_id: int, **fields) -> bool:
+    clean = {k: v for k, v in fields.items() if k in _PLAYER_ADMIN_FIELDS and v is not None}
+    if not clean:
+        return False
+    conn = get_connection()
+    sets = ", ".join(f"{k} = ?" for k in clean)
+    conn.execute(f"UPDATE players SET {sets} WHERE discord_id = ?", (*clean.values(), discord_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def admin_set_calibration(discord_id: int, mode: str, value: int):
+    col = _get_calib_column(mode)
+    value = max(0, min(5, int(value)))
+    conn = get_connection()
+    conn.execute(f"UPDATE players SET {col} = ? WHERE discord_id = ?", (value, discord_id))
+    conn.commit()
+    conn.close()
+
+
+def admin_reset_calibration(discord_id: int, mode: str | None = None):
+    conn = get_connection()
+    if mode in (None, "both", "all"):
+        conn.execute(
+            "UPDATE players SET calibration_5x5 = 0, calibration_1x1 = 0 WHERE discord_id = ?",
+            (discord_id,),
+        )
+    elif mode == "5x5":
+        conn.execute("UPDATE players SET calibration_5x5 = 0 WHERE discord_id = ?", (discord_id,))
+    elif mode == "1x1":
+        conn.execute("UPDATE players SET calibration_1x1 = 0 WHERE discord_id = ?", (discord_id,))
+    conn.commit()
+    conn.close()
+
+
+def admin_finish_calibration(discord_id: int, mode: str):
+    admin_set_calibration(discord_id, mode, 5)
+
+
+def admin_add_win_loss(discord_id: int, wins: int = 0, losses: int = 0, tournaments: int = 0):
+    conn = get_connection()
+    conn.execute(
+        """UPDATE players SET
+           wins = MAX(0, wins + ?),
+           losses = MAX(0, losses + ?),
+           tournaments = MAX(0, tournaments + ?)
+           WHERE discord_id = ?""",
+        (wins, losses, tournaments, discord_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def admin_reset_player_stats(discord_id: int, *, keep_points: bool = True):
+    conn = get_connection()
+    if keep_points:
+        conn.execute(
+            """UPDATE players SET
+               wins=0, losses=0, tournaments=0,
+               zxc_5x5=1000, zxc_1x1=1000,
+               calibration_5x5=0, calibration_1x1=0,
+               total_kills=0, total_deaths=0, total_assists=0,
+               win_streak=0, best_win_streak=0, last_daily_at=NULL
+               WHERE discord_id = ?""",
+            (discord_id,),
+        )
+    else:
+        conn.execute(
+            """UPDATE players SET
+               points=0, wins=0, losses=0, tournaments=0,
+               zxc_5x5=1000, zxc_1x1=1000,
+               calibration_5x5=0, calibration_1x1=0,
+               total_kills=0, total_deaths=0, total_assists=0,
+               win_streak=0, best_win_streak=0, last_daily_at=NULL
+               WHERE discord_id = ?""",
+            (discord_id,),
+        )
+    conn.commit()
+    conn.close()
+
+
+def admin_delete_player(discord_id: int):
+    conn = get_connection()
+    conn.execute("DELETE FROM match_player_logs WHERE discord_id = ?", (discord_id,))
+    conn.execute("DELETE FROM tournament_players WHERE discord_id = ?", (discord_id,))
+    conn.execute("DELETE FROM player_roles WHERE discord_id = ?", (discord_id,))
+    conn.execute("DELETE FROM reward_requests WHERE discord_id = ?", (discord_id,))
+    conn.execute("DELETE FROM clan_members WHERE discord_id = ?", (discord_id,))
+    conn.execute("DELETE FROM players WHERE discord_id = ?", (discord_id,))
+    conn.commit()
+    conn.close()
+
+
+def admin_delete_tournament(tournament_id: int) -> bool:
+    conn = get_connection()
+    cur = conn.execute("SELECT id FROM tournaments WHERE id = ?", (tournament_id,)).fetchone()
+    if not cur:
+        conn.close()
+        return False
+    conn.execute("DELETE FROM match_player_logs WHERE tournament_id = ?", (tournament_id,))
+    conn.execute("DELETE FROM tournament_players WHERE tournament_id = ?", (tournament_id,))
+    conn.execute("DELETE FROM matches WHERE tournament_id = ?", (tournament_id,))
+    conn.execute("DELETE FROM tournaments WHERE id = ?", (tournament_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def admin_clear_match_logs(limit: int | None = None) -> int:
+    conn = get_connection()
+    if limit:
+        rows = conn.execute(
+            "SELECT id FROM match_player_logs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        if rows:
+            ids = [r[0] for r in rows]
+            placeholders = ",".join("?" * len(ids))
+            cur = conn.execute(f"DELETE FROM match_player_logs WHERE id IN ({placeholders})", ids)
+        else:
+            cur = conn.execute("DELETE FROM match_player_logs WHERE 0")
+    else:
+        cur = conn.execute("DELETE FROM match_player_logs")
+    n = cur.rowcount
+    conn.commit()
+    conn.close()
+    return n
+
+
+def admin_clear_all_tournaments() -> int:
+    conn = get_connection()
+    conn.execute("DELETE FROM match_player_logs")
+    conn.execute("DELETE FROM matches")
+    conn.execute("DELETE FROM tournament_players")
+    cur = conn.execute("DELETE FROM tournaments")
+    n = cur.rowcount
+    conn.commit()
+    conn.close()
+    return n
+
+
+def admin_list_tournaments(limit: int = 10) -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, status, winner, created_at, finished_at, void_reason, cancel_reason FROM tournaments ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def export_player_snapshot(discord_id: int) -> dict | None:
+    p = get_player_full(discord_id)
+    if not p:
+        return None
+    keys = [
+        "discord_id", "username", "points", "wins", "losses", "tournaments",
+        "zxc_5x5", "zxc_1x1", "calibration_5x5", "calibration_1x1",
+        "total_kills", "total_deaths", "total_assists",
+        "win_streak", "best_win_streak", "dota_name", "steam_id",
+    ]
+    return {k: p.get(k) for k in keys if k in p}
+
+
+def import_player_snapshot(data: dict) -> bool:
+    discord_id = int(data["discord_id"])
+    username = str(data.get("username") or "unknown")
+    get_or_create_player(discord_id, username)
+    fields = {k: data[k] for k in _PLAYER_ADMIN_FIELDS if k in data and k != "username"}
+    if "username" in data:
+        fields["username"] = username
+    admin_update_player(discord_id, **fields)
+    return True
+
+
+# --- Кланы: казна, уровни, матчи ---
+
+class ClanError(Exception):
+    pass
+
+
+_CLAN_TREASURY_ROLES = frozenset({"офицер", "казначей", "officer", "treasurer"})
+
+
+def clan_level_from_xp(xp: int, base: int = 500) -> int:
+    return max(1, 1 + int(xp) // max(base, 1))
+
+
+def _clan_recalc_level(conn, clan_id: int, xp: int, base: int):
+    lvl = clan_level_from_xp(xp, base)
+    conn.execute("UPDATE clans SET level = ? WHERE id = ?", (lvl, clan_id))
+
+
+def get_clan_membership(discord_id: int) -> dict | None:
+    """Клан игрока + роль в клане."""
+    conn = get_connection()
+    row = conn.execute(
+        """
+        SELECT c.*, cm.role AS member_role
+        FROM clans c
+        JOIN clan_members cm ON c.id = cm.clan_id
+        WHERE cm.discord_id = ?
+        """,
+        (discord_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def clan_can_manage_treasury(clan: dict, discord_id: int, member_role: str | None) -> bool:
+    if clan.get("owner_id") == discord_id:
+        return True
+    role = (member_role or "").strip().lower()
+    return role in _CLAN_TREASURY_ROLES
+
+
+def _clan_log(conn, clan_id: int, actor_id: int | None, amount: int, reason: str):
+    conn.execute(
+        "INSERT INTO clan_treasury_log (clan_id, actor_id, amount, reason) VALUES (?, ?, ?, ?)",
+        (clan_id, actor_id, amount, reason),
+    )
+
+
+def get_clan_treasury_log(clan_id: int, limit: int = 8) -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT actor_id, amount, reason, created_at
+        FROM clan_treasury_log
+        WHERE clan_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (clan_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def clan_deposit(discord_id: int, amount: int, *, xp_base: int = 500, xp_per_100: int = 15) -> dict:
+    if amount <= 0:
+        raise ClanError("Сумма должна быть больше 0.")
+    clan = get_clan_membership(discord_id)
+    if not clan:
+        raise ClanError("Вы не в клане.")
+    conn = get_connection()
+    row = conn.execute("SELECT points FROM players WHERE discord_id = ?", (discord_id,)).fetchone()
+    if not row or row["points"] < amount:
+        conn.close()
+        raise ClanError("Недостаточно личных очков.")
+    conn.execute("UPDATE players SET points = points - ? WHERE discord_id = ?", (amount, discord_id))
+    conn.execute("UPDATE clans SET treasury = treasury + ? WHERE id = ?", (amount, clan["id"]))
+    xp_gain = (amount // 100) * xp_per_100
+    if xp_gain:
+        conn.execute("UPDATE clans SET xp = xp + ? WHERE id = ?", (xp_gain, clan["id"]))
+        new_xp = conn.execute("SELECT xp FROM clans WHERE id = ?", (clan["id"],)).fetchone()["xp"]
+        _clan_recalc_level(conn, clan["id"], new_xp, xp_base)
+    _clan_log(conn, clan["id"], discord_id, amount, "deposit")
+    conn.commit()
+    treasury = conn.execute("SELECT treasury, xp, level FROM clans WHERE id = ?", (clan["id"],)).fetchone()
+    conn.close()
+    return {"treasury": treasury["treasury"], "xp": treasury["xp"], "level": treasury["level"]}
+
+
+def clan_withdraw(discord_id: int, amount: int) -> dict:
+    if amount <= 0:
+        raise ClanError("Сумма должна быть больше 0.")
+    clan = get_clan_membership(discord_id)
+    if not clan:
+        raise ClanError("Вы не в клане.")
+    if not clan_can_manage_treasury(clan, discord_id, clan.get("member_role")):
+        raise ClanError("Снимать из казны могут владелец, Офицер или Казначей.")
+    conn = get_connection()
+    row = conn.execute("SELECT treasury FROM clans WHERE id = ?", (clan["id"],)).fetchone()
+    if not row or row["treasury"] < amount:
+        conn.close()
+        raise ClanError("В казне недостаточно очков.")
+    conn.execute("UPDATE clans SET treasury = treasury - ? WHERE id = ?", (amount, clan["id"]))
+    conn.execute("UPDATE players SET points = points + ? WHERE discord_id = ?", (amount, discord_id))
+    _clan_log(conn, clan["id"], discord_id, -amount, "withdraw")
+    conn.commit()
+    treasury = conn.execute("SELECT treasury FROM clans WHERE id = ?", (clan["id"],)).fetchone()["treasury"]
+    conn.close()
+    return {"treasury": treasury}
+
+
+def clan_pay_member(actor_id: int, target_id: int, amount: int) -> dict:
+    if amount <= 0:
+        raise ClanError("Сумма должна быть больше 0.")
+    if actor_id == target_id:
+        raise ClanError("Нельзя выплатить самому себе — используйте /clan_withdraw.")
+    clan = get_clan_membership(actor_id)
+    if not clan:
+        raise ClanError("Вы не в клане.")
+    if clan["owner_id"] != actor_id:
+        raise ClanError("Выплаты из казны — только владелец клана.")
+    conn = get_connection()
+    in_clan = conn.execute(
+        "SELECT 1 FROM clan_members WHERE clan_id = ? AND discord_id = ?",
+        (clan["id"], target_id),
+    ).fetchone()
+    if not in_clan:
+        conn.close()
+        raise ClanError("Игрок не в вашем клане.")
+    row = conn.execute("SELECT treasury FROM clans WHERE id = ?", (clan["id"],)).fetchone()
+    if not row or row["treasury"] < amount:
+        conn.close()
+        raise ClanError("В казне недостаточно очков.")
+    conn.execute("UPDATE clans SET treasury = treasury - ? WHERE id = ?", (amount, clan["id"]))
+    get_or_create_player(target_id, str(target_id))
+    conn.execute("UPDATE players SET points = points + ? WHERE discord_id = ?", (amount, target_id))
+    _clan_log(conn, clan["id"], actor_id, -amount, f"pay:{target_id}")
+    conn.commit()
+    treasury = conn.execute("SELECT treasury FROM clans WHERE id = ?", (clan["id"],)).fetchone()["treasury"]
+    conn.close()
+    return {"treasury": treasury}
+
+
+def clan_transfer_ownership(owner_id: int, new_owner_id: int) -> None:
+    clan = get_clan_membership(owner_id)
+    if not clan:
+        raise ClanError("Вы не в клане.")
+    if clan["owner_id"] != owner_id:
+        raise ClanError("Только владелец может передать клан.")
+    conn = get_connection()
+    check = conn.execute(
+        "SELECT 1 FROM clan_members WHERE clan_id = ? AND discord_id = ?",
+        (clan["id"], new_owner_id),
+    ).fetchone()
+    if not check:
+        conn.close()
+        raise ClanError("Новый владелец должен быть в клане.")
+    conn.execute("UPDATE clans SET owner_id = ? WHERE id = ?", (new_owner_id, clan["id"]))
+    conn.execute(
+        "UPDATE clan_members SET role = 'Участник' WHERE clan_id = ? AND discord_id = ?",
+        (clan["id"], owner_id),
+    )
+    conn.execute(
+        "UPDATE clan_members SET role = 'Владелец' WHERE clan_id = ? AND discord_id = ?",
+        (clan["id"], new_owner_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def clan_set_member_role(actor_id: int, target_id: int, role: str) -> None:
+    clan = get_clan_membership(actor_id)
+    if not clan or clan["owner_id"] != actor_id:
+        raise ClanError("Только владелец может менять роли.")
+    conn = get_connection()
+    ok = conn.execute(
+        "SELECT 1 FROM clan_members WHERE clan_id = ? AND discord_id = ?",
+        (clan["id"], target_id),
+    ).fetchone()
+    if not ok:
+        conn.close()
+        raise ClanError("Игрок не в клане.")
+    conn.execute(
+        "UPDATE clan_members SET role = ? WHERE clan_id = ? AND discord_id = ?",
+        (role.strip()[:30], clan["id"], target_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def process_clan_match_result(
+    winner_ids: list[int],
+    loser_ids: list[int],
+    *,
+    treasury_bonus: int = 25,
+    min_members: int = 2,
+    xp_gain: int = 40,
+) -> list[dict]:
+    """Бонус казне и W/L кланам, если на команде 2+ игроков одного клана."""
+    from collections import defaultdict
+
+    def _group(ids: list[int]) -> dict[int, list[int]]:
+        out: dict[int, list[int]] = defaultdict(list)
+        conn = get_connection()
+        for uid in ids:
+            row = conn.execute(
+                "SELECT clan_id FROM clan_members WHERE discord_id = ?",
+                (uid,),
+            ).fetchone()
+            if row:
+                out[int(row["clan_id"])].append(uid)
+        conn.close()
+        return out
+
+    results: list[dict] = []
+    conn = get_connection()
+
+    for clan_id, members in _group(winner_ids).items():
+        if len(members) < min_members:
+            continue
+        conn.execute(
+            "UPDATE clans SET wins = wins + 1, treasury = treasury + ?, xp = xp + ? WHERE id = ?",
+            (treasury_bonus, xp_gain, clan_id),
+        )
+        _clan_log(conn, clan_id, None, treasury_bonus, "match_win")
+        row = conn.execute("SELECT xp, tag, name FROM clans WHERE id = ?", (clan_id,)).fetchone()
+        if row:
+            _clan_recalc_level(conn, clan_id, row["xp"], 500)
+            results.append(
+                {
+                    "clan_id": clan_id,
+                    "tag": row["tag"],
+                    "name": row["name"],
+                    "members": len(members),
+                    "treasury_bonus": treasury_bonus,
+                    "win": True,
+                }
+            )
+
+    for clan_id, members in _group(loser_ids).items():
+        if len(members) < min_members:
+            continue
+        conn.execute("UPDATE clans SET losses = losses + 1 WHERE id = ?", (clan_id,))
+        lrow = conn.execute("SELECT tag, name FROM clans WHERE id = ?", (clan_id,)).fetchone()
+        results.append(
+            {
+                "clan_id": clan_id,
+                "tag": lrow["tag"] if lrow else "?",
+                "name": lrow["name"] if lrow else "?",
+                "win": False,
+                "members": len(members),
+            }
+        )
+
+    conn.commit()
+    conn.close()
+    return results
+
+
+def _seconds_until_claim(last_at: datetime | None, cooldown_seconds: int) -> tuple[bool, int]:
+    if not last_at:
+        return True, 0
+    passed = int((datetime.utcnow() - last_at).total_seconds())
+    left = max(0, cooldown_seconds - passed)
+    return left == 0, left
+
+
+def can_claim_weekly(discord_id: int, cooldown_seconds: int = 7 * 24 * 3600) -> tuple[bool, int]:
+    conn = get_connection()
+    row = conn.execute("SELECT last_weekly_at FROM players WHERE discord_id = ?", (discord_id,)).fetchone()
+    conn.close()
+    return _seconds_until_claim(_parse_iso(row["last_weekly_at"]) if row else None, cooldown_seconds)
+
+
+def claim_weekly(discord_id: int, amount: int, cooldown_seconds: int = 7 * 24 * 3600) -> tuple[bool, int]:
+    ok, left = can_claim_weekly(discord_id, cooldown_seconds)
+    if not ok:
+        return False, left
+    add_points(discord_id, amount, count_match=False)
+    conn = get_connection()
+    conn.execute(
+        "UPDATE players SET last_weekly_at = ? WHERE discord_id = ?",
+        (datetime.utcnow().isoformat(), discord_id),
+    )
+    conn.commit()
+    conn.close()
+    return True, cooldown_seconds
+
+
+def can_claim_lucky(discord_id: int, cooldown_seconds: int) -> tuple[bool, int]:
+    conn = get_connection()
+    row = conn.execute("SELECT last_lucky_at FROM players WHERE discord_id = ?", (discord_id,)).fetchone()
+    conn.close()
+    return _seconds_until_claim(_parse_iso(row["last_lucky_at"]) if row else None, cooldown_seconds)
+
+
+def claim_lucky(
+    discord_id: int,
+    *,
+    cooldown_seconds: int,
+    min_reward: int,
+    max_reward: int,
+    jackpot: int,
+    jackpot_chance_percent: int,
+) -> tuple[bool, int, int, bool]:
+    """(ok, seconds_left, amount, is_jackpot)."""
+    import random
+
+    ok, left = can_claim_lucky(discord_id, cooldown_seconds)
+    if not ok:
+        return False, left, 0, False
+    is_jackpot = random.randint(1, 100) <= max(1, min(jackpot_chance_percent, 100))
+    amount = jackpot if is_jackpot else random.randint(min_reward, max_reward)
+    add_points(discord_id, amount, count_match=False)
+    conn = get_connection()
+    conn.execute(
+        "UPDATE players SET last_lucky_at = ? WHERE discord_id = ?",
+        (datetime.utcnow().isoformat(), discord_id),
+    )
+    conn.commit()
+    conn.close()
+    return True, 0, amount, is_jackpot
+
+
+def can_gamble(discord_id: int, cooldown_seconds: int) -> tuple[bool, int]:
+    conn = get_connection()
+    row = conn.execute("SELECT last_gamble_at FROM players WHERE discord_id = ?", (discord_id,)).fetchone()
+    conn.close()
+    return _seconds_until_claim(_parse_iso(row["last_gamble_at"]) if row else None, cooldown_seconds)
+
+
+def play_gamble(discord_id: int, bet: int, *, cooldown_seconds: int, payout_mult: float) -> tuple[bool, str, int]:
+    """
+    Возвращает (ok, message, balance_delta).
+    balance_delta > 0 выигрыш, < 0 проигрыш.
+    """
+    import random
+
+    ok, left = can_gamble(discord_id, cooldown_seconds)
+    if not ok:
+        return False, f"Подождите {left} сек.", 0
+    player = get_player(discord_id)
+    if not player or player["points"] < bet:
+        return False, "Недостаточно очков.", 0
+    won = random.random() < 0.5
+    if won:
+        profit = int(bet * payout_mult) - bet
+        add_points(discord_id, profit, count_match=False)
+        delta = profit
+        msg = f"Победа! +**{profit}** (ставка {bet})"
+    else:
+        add_points(discord_id, -bet, count_match=False)
+        delta = -bet
+        msg = f"Проигрыш **-{bet}**"
+    conn = get_connection()
+    conn.execute(
+        "UPDATE players SET last_gamble_at = ? WHERE discord_id = ?",
+        (datetime.utcnow().isoformat(), discord_id),
+    )
+    conn.commit()
+    conn.close()
+    return True, msg, delta
+
+
+def claim_activity_streak(
+    discord_id: int,
+    *,
+    base_reward: int,
+    streak_bonus_per_day: int = 3,
+    streak_cap: int = 50,
+) -> tuple[bool, int, int, int]:
+    """
+    Ежедневная серия активности (отдельно от daily).
+    Возвращает (ok, seconds_left, streak, reward).
+    """
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT activity_streak, best_activity_streak, last_activity_at FROM players WHERE discord_id = ?",
+        (discord_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return False, 0, 0, 0
+
+    now = datetime.utcnow()
+    last = _parse_iso(row["last_activity_at"])
+    if last and last.date() == now.date():
+        conn.close()
+        left = int((datetime.combine(now.date() + timedelta(days=1), datetime.min.time()) - now).total_seconds())
+        return False, max(left, 60), int(row["activity_streak"] or 0), 0
+
+    streak = int(row["activity_streak"] or 0)
+    if last and (now.date() - last.date()).days == 1:
+        streak += 1
+    else:
+        streak = 1
+    best = max(int(row["best_activity_streak"] or 0), streak)
+    bonus = min((streak - 1) * streak_bonus_per_day, streak_cap)
+    reward = base_reward + bonus
+    add_points(discord_id, reward, count_match=False)
+    conn.execute(
+        """
+        UPDATE players SET activity_streak = ?, best_activity_streak = ?, last_activity_at = ?
+        WHERE discord_id = ?
+        """,
+        (streak, best, now.isoformat(), discord_id),
+    )
+    conn.commit()
+    conn.close()
+    return True, 0, streak, reward
+
+
+def get_activity_streak_info(discord_id: int) -> tuple[int, int, bool]:
+    """(current, best, claimed_today)."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT activity_streak, best_activity_streak, last_activity_at FROM players WHERE discord_id = ?",
+        (discord_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return 0, 0, False
+    last = _parse_iso(row["last_activity_at"])
+    claimed = bool(last and last.date() == datetime.utcnow().date())
+    return int(row["activity_streak"] or 0), int(row["best_activity_streak"] or 0), claimed
+
+
+def get_leaderboard(kind: str = "points", limit: int = 10) -> list[dict]:
+    queries = {
+        "points": "SELECT discord_id, username, points FROM players ORDER BY points DESC LIMIT ?",
+        "wins": "SELECT discord_id, username, wins FROM players ORDER BY wins DESC LIMIT ?",
+        "streak": "SELECT discord_id, username, win_streak, best_win_streak FROM players ORDER BY win_streak DESC LIMIT ?",
+        "zxc": "SELECT discord_id, username, zxc_5x5 FROM players ORDER BY zxc_5x5 DESC LIMIT ?",
+    }
+    sql = queries.get(kind, queries["points"])
+    conn = get_connection()
+    rows = conn.execute(sql, (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def record_duel_result(winner_id: int, loser_id: int) -> None:
+    conn = get_connection()
+    conn.execute("UPDATE players SET duel_wins = duel_wins + 1 WHERE discord_id = ?", (winner_id,))
+    conn.execute("UPDATE players SET duel_losses = duel_losses + 1 WHERE discord_id = ?", (loser_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_player_achievements(discord_id: int) -> list[str]:
+    p = get_player(discord_id)
+    if not p:
+        return []
+    badges = []
+    wins = p.get("wins", 0) or 0
+    tournaments = p.get("tournaments", 0) or 0
+    points = p.get("points", 0) or 0
+    streak, best_streak = get_win_streak_info(discord_id)
+    act, best_act, _ = get_activity_streak_info(discord_id)
+    if wins >= 1:
+        badges.append("🎮 Первая победа")
+    if wins >= 10:
+        badges.append("🏅 10 побед")
+    if wins >= 50:
+        badges.append("👑 50 побед")
+    if tournaments >= 25:
+        badges.append("📊 Ветеран (25+ матчей)")
+    if points >= 1000:
+        badges.append("💰 Богач (1000+ очков)")
+    if best_streak >= 5:
+        badges.append(f"🔥 Серия {best_streak} побед")
+    if best_act >= 7:
+        badges.append(f"📅 Активность {best_act} дней")
+    dw = p.get("duel_wins", 0) or 0
+    if dw >= 5:
+        badges.append(f"⚔️ Дуэлянт ({dw} побед)")
+    if not badges:
+        badges.append("🌱 Новичок — сыграйте первый матч!")
+    return badges
+
+
+def tip_player(from_id: int, to_id: int, amount: int) -> None:
+    if amount <= 0:
+        raise ClanError("Сумма должна быть больше 0.")
+    if from_id == to_id:
+        raise ClanError("Нельзя перевести себе.")
+    conn = get_connection()
+    row = conn.execute("SELECT points FROM players WHERE discord_id = ?", (from_id,)).fetchone()
+    if not row or row["points"] < amount:
+        conn.close()
+        raise ClanError("Недостаточно очков.")
+    get_or_create_player(to_id, str(to_id))
+    conn.execute("UPDATE players SET points = points - ? WHERE discord_id = ?", (amount, from_id))
+    conn.execute("UPDATE players SET points = points + ? WHERE discord_id = ?", (amount, to_id))
+    conn.commit()
+    conn.close()
